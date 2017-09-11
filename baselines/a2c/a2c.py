@@ -69,7 +69,7 @@ class Model(object):
 
         def save(save_path):
             ps = sess.run(params)
-            make_path(save_path)
+            make_path(osp.dirname(save_path))
             joblib.dump(ps, save_path)
 
         def load(load_path):
@@ -163,6 +163,13 @@ def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_c
     num_procs = len(env.remotes) # HACK
     model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, nstack=nstack, num_procs=num_procs, ent_coef=ent_coef, vf_coef=vf_coef,
         max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule)
+    if osp.exists(osp.join(logger.get_dir(), "model")):
+        try:
+            model.load(osp.join(logger.get_dir(), "model"))
+            logger.info("Model loaded successfully")
+        except Exception as e:
+            logger.error("Model could not be loaded:\n{0}".format(e))
+
     runner = Runner(env, model, nsteps=nsteps, nstack=nstack, gamma=gamma)
 
     nbatch = nenvs*nsteps
@@ -181,6 +188,7 @@ def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_c
             logger.record_tabular("value_loss", float(value_loss))
             logger.record_tabular("explained_variance", float(ev))
             logger.dump_tabular()
+            model.save(osp.join(logger.get_dir(), "model"))
     env.close()
 
 if __name__ == '__main__':
