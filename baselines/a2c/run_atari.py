@@ -40,7 +40,18 @@ def main():
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--million_frames', help='How many frames to train (/ 1e6). '
         'This number gets divided by 4 due to frameskip', type=int, default=40)
+    parser.add_argument('--logdir', help='logs will be saved to logdir/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
     args = parser.parse_args()
+    if args.logdir:
+        for run_no in range(int(1e6)):
+            logdir = os.path.join(args.logdir, args.env, str(run_no))
+            if not os.path.isdir(logdir):
+                os.putenv('OPENAI_LOGDIR', logdir)
+                logger.reset()
+                logger.configure(logdir)
+                break
+            else:
+                run_no += 1
     train(args.env, num_frames=1e6 * args.million_frames, seed=args.seed, 
         policy=args.policy, lrschedule=args.lrschedule, num_cpu=16)
 
