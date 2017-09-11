@@ -6,12 +6,12 @@ import baselines.common.tf_util as U
 import gym
 
 class LnLstmPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nenv, nsteps, nstack, nlstm=256, reuse=False):
+    def __init__(self, sess, ob_space, ob_dtype, ac_space, nenv, nsteps, nstack, nlstm=256, reuse=False):
         nbatch = nenv*nsteps
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc*nstack)
         nact = ac_space.n
-        X = tf.placeholder(tf.uint8, ob_shape) #obs
+        X = tf.placeholder(ob_dtype, ob_shape) #obs
         M = tf.placeholder(tf.float32, [nbatch]) #mask (done t-1)
         S = tf.placeholder(tf.float32, [nenv, nlstm*2]) #states
         with tf.variable_scope("model", reuse=reuse):
@@ -48,12 +48,12 @@ class LnLstmPolicy(object):
 
 class LstmPolicy(object):
 
-    def __init__(self, sess, ob_space, ac_space, nenv, nsteps, nstack, nlstm=256, reuse=False):
+    def __init__(self, sess, ob_space, ob_dtype, ac_space, nenv, nsteps, nstack, nlstm=256, reuse=False):
         nbatch = nenv*nsteps
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc*nstack)
         nact = ac_space.n
-        X = tf.placeholder(tf.uint8, ob_shape) #obs
+        X = tf.placeholder(ob_dtype, ob_shape) #obs
         M = tf.placeholder(tf.float32, [nbatch]) #mask (done t-1)
         S = tf.placeholder(tf.float32, [nenv, nlstm*2]) #states
         with tf.variable_scope("model", reuse=reuse):
@@ -90,12 +90,12 @@ class LstmPolicy(object):
 
 class CnnPolicy(object):
 
-    def __init__(self, sess, ob_space, ac_space, nenv, nsteps, nstack, reuse=False):
+    def __init__(self, sess, ob_space, ob_dtype, ac_space, nenv, nsteps, nstack, reuse=False):
         nbatch = nenv*nsteps
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc*nstack)
         nact = ac_space.n
-        X = tf.placeholder(tf.uint8, ob_shape) #obs
+        X = tf.placeholder(ob_dtype, ob_shape) #obs
         with tf.variable_scope("model", reuse=reuse):
             h = conv(tf.cast(X, tf.float32)/255., 'c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
             h2 = conv(h, 'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
