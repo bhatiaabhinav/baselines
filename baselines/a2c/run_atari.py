@@ -8,7 +8,7 @@ from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.common.atari_wrappers import wrap_deepmind
 from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy
 
-def train(env_id, num_frames, seed, policy, lrschedule, num_cpu, saved_model_path):
+def train(env_id, num_frames, seed, policy, lrschedule, num_cpu, saved_model_path, render, no_training):
     num_timesteps = int(num_frames / 4 * 1.1) 
     # divide by 4 due to frameskip, then do a little extras so episodes end
     def make_env(rank):
@@ -28,7 +28,7 @@ def train(env_id, num_frames, seed, policy, lrschedule, num_cpu, saved_model_pat
         policy_fn = LstmPolicy
     elif policy == 'lnlstm':
         policy_fn = LnLstmPolicy
-    learn(policy_fn, env, seed, total_timesteps=num_timesteps, lrschedule=lrschedule, saved_model_path=saved_model_path)
+    learn(policy_fn, env, seed, total_timesteps=num_timesteps, lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training)
     env.close()
 
 def main():
@@ -42,6 +42,8 @@ def main():
         'This number gets divided by 4 due to frameskip', type=int, default=40)
     parser.add_argument('--logdir', help='logs will be saved to {logdir}/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. run_no gets incremented automatically based on existance of previous runs in {logdir}/{env}/ . No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
     parser.add_argument('--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default = None)
+    parser.add_argument('--render', help='whether or not to render the env. False by default', default=False)
+    parser.add_argument('--no_training', help='whether to just play without training', default=False)
     args = parser.parse_args()
     if args.logdir:
         for run_no in range(int(1e6)):
@@ -54,7 +56,8 @@ def main():
             else:
                 run_no += 1
     train(args.env, num_frames=1e6 * args.million_frames, seed=args.seed, 
-        policy=args.policy, lrschedule=args.lrschedule, num_cpu=16, saved_model_path=args.saved_model)
+        policy=args.policy, lrschedule=args.lrschedule, num_cpu=16, saved_model_path=args.saved_model, 
+        render=args.render, no_training=args.no_training)
 
 if __name__ == '__main__':
     main()

@@ -91,7 +91,7 @@ class Model(object):
 
 class Runner(object):
 
-    def __init__(self, env, model, nsteps=5, nstack=4, gamma=0.99, _lambda=1.0):
+    def __init__(self, env, model, nsteps=5, nstack=4, gamma=0.99, _lambda=1.0, render=False):
         self.env = env
         self.model = model
         nh, nw, nc = env.observation_space.shape
@@ -105,6 +105,7 @@ class Runner(object):
         self.nsteps = nsteps
         self.states = model.initial_state
         self.dones = [False for _ in range(nenv)]
+        self.render = render
 
     def update_obs(self, obs):
         # Do frame-stacking here instead of the FrameStack wrapper to reduce
@@ -122,6 +123,7 @@ class Runner(object):
             mb_values.append(values)
             mb_dones.append(self.dones)
             obs, rewards, dones, _ = self.env.step(actions)
+            self.env.render(mode='human') if self.render else self.env.render(close=True)
             self.states = states
             self.dones = dones
             for n, done in enumerate(dones):
@@ -154,7 +156,7 @@ class Runner(object):
         mb_masks = mb_masks.flatten()
         return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
-def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None):
+def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -171,12 +173,13 @@ def learn(policy, env, seed, nsteps=5, nstack=4, total_timesteps=int(80e6), vf_c
         except Exception as e:
             logger.error("Model could not be loaded:\n{0}".format(e))
     
-    runner = Runner(env, model, nsteps=nsteps, nstack=nstack, gamma=gamma, _lambda=_lambda)
+    runner = Runner(env, model, nsteps=nsteps, nstack=nstack, gamma=gamma, _lambda=_lambda, render=render)
 
     nbatch = nenvs*nsteps
     tstart = time.time()
     for update in range(1, total_timesteps//nbatch+1):
         obs, states, rewards, masks, actions, values = runner.run()
+        if no_training: continue
         policy_loss, value_loss, policy_entropy = model.train(obs, states, rewards, masks, actions, values)
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)

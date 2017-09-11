@@ -17,6 +17,9 @@ def worker(remote, env_fn_wrapper):
         elif cmd == 'close':
             remote.close()
             break
+        elif cmd == 'render':
+            env.render(close=data[0], mode=data[1])
+            remote.send(None)
         elif cmd == 'get_spaces':
             remote.send((env.action_space, env.observation_space))
         else:
@@ -61,6 +64,11 @@ class SubprocVecEnv(VecEnv):
     def reset(self):
         for remote in self.remotes:
             remote.send(('reset', None))
+        return np.stack([remote.recv() for remote in self.remotes])
+
+    def render(self, close=False, mode='human'):
+        for remote in self.remotes:
+            remote.send(('render', (close, mode)))
         return np.stack([remote.recv() for remote in self.remotes])
 
     def close(self):
