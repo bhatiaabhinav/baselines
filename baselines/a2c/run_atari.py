@@ -8,7 +8,7 @@ from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.common.atari_wrappers import wrap_deepmind
 from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy
 
-def train(env_id, num_frames, seed, policy, lrschedule, num_cpu):
+def train(env_id, num_frames, seed, policy, lrschedule, num_cpu, saved_model_path):
     num_timesteps = int(num_frames / 4 * 1.1) 
     # divide by 4 due to frameskip, then do a little extras so episodes end
     def make_env(rank):
@@ -28,7 +28,7 @@ def train(env_id, num_frames, seed, policy, lrschedule, num_cpu):
         policy_fn = LstmPolicy
     elif policy == 'lnlstm':
         policy_fn = LnLstmPolicy
-    learn(policy_fn, env, seed, total_timesteps=num_timesteps, lrschedule=lrschedule)
+    learn(policy_fn, env, seed, total_timesteps=num_timesteps, lrschedule=lrschedule, saved_model_path=saved_model_path)
     env.close()
 
 def main():
@@ -40,7 +40,8 @@ def main():
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--million_frames', help='How many frames to train (/ 1e6). '
         'This number gets divided by 4 due to frameskip', type=int, default=40)
-    parser.add_argument('--logdir', help='logs will be saved to logdir/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
+    parser.add_argument('--logdir', help='logs will be saved to {logdir}/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. run_no gets incremented automatically based on existance of previous runs in {logdir}/{env}/ . No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
+    parser.add_argument('--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default = None)
     args = parser.parse_args()
     if args.logdir:
         for run_no in range(int(1e6)):
@@ -53,7 +54,7 @@ def main():
             else:
                 run_no += 1
     train(args.env, num_frames=1e6 * args.million_frames, seed=args.seed, 
-        policy=args.policy, lrschedule=args.lrschedule, num_cpu=16)
+        policy=args.policy, lrschedule=args.lrschedule, num_cpu=16, saved_model_path=args.saved_model)
 
 if __name__ == '__main__':
     main()
