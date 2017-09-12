@@ -12,7 +12,9 @@ import gym_ERSLE
 class ObsExpandWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        self.observation_space = gym.spaces.Box(env.observation_space.low[0], env.observation_space.high[0],
+        low = env.observation_space.low
+        high = env.observation_space.high
+        self.observation_space = gym.spaces.Box(low if np.isscalar(low) else np.asarray(low).item(0), high if np.isscalar(high) else np.asarray(high).item(0),
                                                shape = (
                                                    env.observation_space.shape[0],
                                                    env.observation_space.shape[1] if len(env.observation_space.shape) >= 2 else 1,
