@@ -7,7 +7,7 @@ from baselines import bench
 from baselines.a2c.a2c import learn
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy, FcPolicy
-
+import gym_ERSLE
 
 class ObsExpandWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -62,7 +62,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, saved
 def main():
     import argparse
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--env', help='environment ID', default='CartPole-v0')
+    parser.add_argument('--env', help='environment ID', default='ERSEnvNoFrameskip-v4')
     parser.add_argument('--ob_dtype', help='datatype of observations eg. uint8, float32', default='float32')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm'], default='fc')
