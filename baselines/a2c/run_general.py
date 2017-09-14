@@ -37,7 +37,7 @@ class ObsExpandWrapper(gym.Wrapper):
             ob = ob[:, :, np.newaxis]
         return ob, r, d, _
 
-def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, saved_model_path, render, no_training):
+def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nsteps, nstack, _lambda, saved_model_path, render, no_training):
     
     def make_env(rank):
         def _thunk():
@@ -58,7 +58,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, saved
         policy_fn = LnLstmPolicy
     elif policy == 'fc':
         policy_fn = FcPolicy
-    learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training, nstack=1, _lambda=0.8)
+    learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training, nsteps=nsteps, nstack=nstack, _lambda=_lambda)
     env.close()
 
 def main():
@@ -70,6 +70,10 @@ def main():
     parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm'], default='fc')
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=int, default=40)
+    parser.add_argument('--num_cpu', help='Number of parallel environments', type=int, default=16)
+    parser.add_argument('--nsteps', help='an update happens every nsteps timesteps for each env', type=int, default=5)
+    parser.add_argument('--nstack', help='how many frames to stack to create one obs', type=int, default=1)
+    parser.add_argument('--_lambda', help='lambda=1 => use nsteps returns. lambda=0 => use 1 step returns. intermidiate values cause averaging of various step returns. Equivalent to eligibility traces', type=float, default=0.8)
     parser.add_argument('--logdir', help='logs will be saved to {logdir}/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. run_no gets incremented automatically based on existance of previous runs in {logdir}/{env}/ . No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
     parser.add_argument('--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default = None)
     parser.add_argument('--render', help='whether or not to render the env. False by default', default=False)
@@ -86,8 +90,8 @@ def main():
             else:
                 run_no += 1
     train(args.env, ob_dtype=args.ob_dtype, num_frames=1e6 * args.million_frames, seed=args.seed, 
-        policy=args.policy, lrschedule=args.lrschedule, num_cpu=16, saved_model_path=args.saved_model, 
-        render=args.render, no_training=args.no_training)
+        policy=args.policy, lrschedule=args.lrschedule, num_cpu=args.num_cpu, nsteps=args.nsteps, nstack=args.nstack, _lambda=args._lambda,
+        saved_model_path=args.saved_model, render=args.render, no_training=args.no_training)
 
 if __name__ == '__main__':
     main()
