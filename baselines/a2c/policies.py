@@ -133,8 +133,10 @@ class FcPolicy(object):
         with tf.variable_scope("model", reuse=reuse):
             h1 = conv_to_fc(X)
             h2 = fc(h1, 'fc1', nh=512, init_scale=np.sqrt(2))
-            pi = fc(h2, 'pi', nact, act=lambda x:x)
-            vf = fc(h2, 'v', 1, act=lambda x:x)
+            h3 = fc(h2, 'fc2', nh=256, init_scale=np.sqrt(2))
+            h4 = fc(h3, 'fc3', nh=128, init_scale=np.sqrt(2))
+            pi = fc(h4, 'pi', nact, act=lambda x:x)
+            vf = fc(h4, 'v', 1, act=lambda x:x)
 
         v0 = vf[:, 0]
         a0 = sample(pi)
