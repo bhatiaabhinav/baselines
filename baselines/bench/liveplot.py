@@ -47,6 +47,8 @@ def leave_figure(event):
 
 rpe, = plt.plot(x,y, label='reward per episode')
 av_rpe, = plt.plot(x,y, label='moving average(100)')
+global_av_rpe, = plt.plot(x,y, label='overall average')
+
 plt.legend()
 plt.title('Reward Per episode')
 plt.gcf().canvas.mpl_connect('figure_enter_event', enter_figure)
@@ -55,12 +57,15 @@ plt.gcf().canvas.mpl_connect('figure_leave_event', leave_figure)
 
 while True:
     r = bench.load_results(logs_dir)
-    x = [i for i in range(len(r['episode_rewards']))]
     y = r['episode_rewards']
+    x = [i for i in range(len(y))]
     rpe.set_xdata(x)
     rpe.set_ydata(y)
     av_rpe.set_xdata(x)
     av_rpe.set_ydata(moving_average(y, 100))
+    av = np.average(y) if len(y) > 0 else 0
+    global_av_rpe.set_xdata(x)
+    global_av_rpe.set_ydata([av for i in range(len(y))])
     plt.gca().relim()
     plt.gca().autoscale(enable=autoscale and time.time()-time_mouse_leave>5)
     plt.pause(5)
