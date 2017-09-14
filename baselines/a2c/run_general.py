@@ -58,7 +58,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, saved
         policy_fn = LnLstmPolicy
     elif policy == 'fc':
         policy_fn = FcPolicy
-    learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training)
+    learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training, nstack=1, _lambda=0.8)
     env.close()
 
 def main():
