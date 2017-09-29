@@ -13,7 +13,7 @@ from baselines.common.atari_wrappers import wrap_deepmind
 
 from baselines.a2c.utils import discount_with_dones
 from baselines.a2c.utils import Scheduler, make_path, find_trainable_variables
-from baselines.a2c.policies import CnnPolicy
+from baselines.a2c.policies import CnnPolicy, ErsPolicy2, ErsPolicy3
 from baselines.a2c.utils import cat_entropy, mse
 
 class Model(object):
@@ -40,7 +40,12 @@ class Model(object):
         neglogpac = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_model.pi, labels=A)
         pg_loss = tf.reduce_mean(ADV * neglogpac)
         vf_loss = tf.reduce_mean(mse(tf.squeeze(train_model.vf), R))
-        entropy = tf.reduce_mean(cat_entropy(train_model.pi))
+        if policy in [ErsPolicy2, ErsPolicy3]:
+            entropy = train_model.entropy
+        else:
+            entropy = tf.reduce_mean(cat_entropy(train_model.pi))
+        if policy in [ErsPolicy2, ErsPolicy3]:
+            ent_coef = 3 * ent_coef
         loss = pg_loss - entropy*ent_coef + vf_loss * vf_coef
 
         params = find_trainable_variables("model")
@@ -57,7 +62,10 @@ class Model(object):
             advs = rewards - values
             for step in range(len(obs)):
                 cur_lr = lr.value()
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr}
+            if policy in [ErsPolicy2, ErsPolicy3]:
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr, train_model.A:actions}
+            else:
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr}
             if states != []:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks

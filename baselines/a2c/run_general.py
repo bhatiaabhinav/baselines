@@ -6,7 +6,7 @@ from baselines.common import set_global_seeds
 from baselines import bench
 from baselines.a2c.a2c import learn
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
-from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy, FcPolicy
+from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy, FcPolicy, ErsPolicy, ErsPolicy2, ErsPolicy3
 import gym_ERSLE
 
 class ObsExpandWrapper(gym.Wrapper):
@@ -58,16 +58,22 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nstep
         policy_fn = LnLstmPolicy
     elif policy == 'fc':
         policy_fn = FcPolicy
+    elif policy == 'ers':
+        policy_fn = ErsPolicy
+    elif policy == 'ers2':
+        policy_fn = ErsPolicy2
+    elif policy == 'ers3':
+        policy_fn = ErsPolicy3
     learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training, nsteps=nsteps, nstack=nstack, _lambda=_lambda)
     env.close()
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--env', help='environment ID', default='ERSEnvNoFrameskip-v4')
+    parser.add_argument('--env', help='environment ID', default='ERSEnv-v1')
     parser.add_argument('--ob_dtype', help='datatype of observations eg. uint8, float32', default='float32')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm'], default='fc')
+    parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm', 'fc', 'ers', 'ers2', 'ers3'], default='fc')
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=int, default=40)
     parser.add_argument('--num_cpu', help='Number of parallel environments', type=int, default=16)
