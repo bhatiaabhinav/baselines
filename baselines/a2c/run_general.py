@@ -50,6 +50,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nstep
         return _thunk
     set_global_seeds(seed)
     env = SubprocVecEnv([make_env(i) for i in range(num_cpu)])
+    env.id = env_id
     if policy == 'cnn':
         policy_fn = CnnPolicy
     elif policy == 'lstm':
@@ -58,7 +59,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nstep
         policy_fn = LnLstmPolicy
     elif policy == 'fc':
         policy_fn = FcPolicy
-    learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training, nsteps=nsteps, nstack=nstack, _lambda=_lambda)
+    learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), frameskip=1, lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training, nsteps=nsteps, nstack=nstack, _lambda=_lambda)
     env.close()
 
 def main():
