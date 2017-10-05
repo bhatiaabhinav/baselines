@@ -5,6 +5,7 @@ from gym.core import Wrapper
 from os import path
 import time
 from glob import glob
+import queue
 
 try:
     import ujson as json # Not necessary for monitor writing, but very useful for monitor loading
@@ -20,13 +21,20 @@ class Monitor(Wrapper):
         self.tstart = time.time()
         if filename is None:
             self.f = None
+            self.f_frames = None
             self.logger = None
+            self.logger_frames = None
         else:
             if not filename.endswith(Monitor.EXT):
                 filename = filename + "." + Monitor.EXT
+            filename_frames = filename.replace('.json', '_frames.json')
             self.f = open(filename, "wt")
+            self.f_frames = open(filename_frames, "wt")
             self.logger = JSONLogger(self.f)
+            self.logger_frames = JSONLogger(self.f_frames)
             self.logger.writekvs({"t_start": self.tstart, "gym_version": gym.__version__,
+                "env_id": env.spec.id if env.spec else 'Unknown'})
+            self.logger_frames.writekvs({"t_start": self.tstart, "gym_version": gym.__version__,
                 "env_id": env.spec.id if env.spec else 'Unknown'})
         self.allow_early_resets = allow_early_resets
         self.rewards = None
@@ -37,6 +45,7 @@ class Monitor(Wrapper):
         self.current_metadata = {} # extra info that gets injected into each log entry
         # Useful for metalearning where we're modifying the environment externally
         # But want our logs to know about these modifications
+        self.frames_info_q = queue.Queue(100)
 
     def __getstate__(self): # XXX
         d = self.__dict__.copy()
@@ -70,15 +79,25 @@ class Monitor(Wrapper):
         if self.needs_reset:
             raise RuntimeError("Tried to step environment that needs reset")
         ob, rew, done, info = self.env.step(action)
+        if self.logger_frames:
+            if not info: info = {}
+            frameinfo = {"frame_no":self.total_steps, "episode_frame_no":len(self.rewards), "episode_no": len(self.episode_rewards), 
+                        "frame_reward": rew, "frame_action": action, "frame_isTerminal": done, "frame_info": dict(info), "t":round(time.time() - self.tstart, 6)}
+            if self.frames_info_q.full():
+                while not self.frames_info_q.empty(): self.logger_frames.writekvs(self.frames_info_q.get())
+            self.frames_info_q.put(frameinfo)
         self.rewards.append(rew)
         if done:
             self.needs_reset = True
             eprew = sum(self.rewards)
             eplen = len(self.rewards)
-            epinfo = {"r": eprew, "l": eplen, "t": round(time.time() - self.tstart, 6)}
+            epinfo = {"episode_no":len(self.episode_rewards) , "episode_reward": eprew, "episode_length": eplen, "t": round(time.time() - self.tstart, 6),
+                      "r":eprew, "l":eplen} # for backward compatibility with old logs readers
             epinfo.update(self.current_metadata)
             if self.logger:
                 self.logger.writekvs(epinfo)
+            if self.logger_frames:
+                while not self.frames_info_q.empty(): self.logger_frames.writekvs(self.frames_info_q.get())
             self.episode_rewards.append(eprew)
             self.episode_lengths.append(eplen)
             info['episode'] = epinfo

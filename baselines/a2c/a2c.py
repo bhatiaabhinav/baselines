@@ -2,6 +2,7 @@ import os.path as osp
 import gym
 import time
 import joblib
+import json
 import logging
 import numpy as np
 import tensorflow as tf
@@ -162,7 +163,7 @@ class Runner(object):
         mb_masks = mb_masks.flatten()
         return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
-def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
+def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timesteps=int(80e6), frameskip=1, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -170,6 +171,12 @@ def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timeste
     ob_space = env.observation_space
     ac_space = env.action_space
     num_procs = len(env.remotes) # HACK
+
+    if logger.get_dir():
+        with open(osp.join(logger.get_dir(), 'params.json'), 'w') as f:
+            f.write(json.dumps({'policy':str(policy), 'env_id':env.id, 'nenvs':nenvs, 'seed':seed, 'ac_space':str(ac_space), 'ob_space':str(ob_space), 'ob_type':ob_dtype, 'nsteps':nsteps, 'nstack':nstack, 'total_timesteps':total_timesteps, 'frameskip':frameskip, 'vf_coef':vf_coef, 'ent_coef':ent_coef,
+                                'max_grad_norm':max_grad_norm, 'lr':lr, 'lrschedule':lrschedule, 'epsilon':epsilon, 'alpha':alpha, 'gamma':gamma, 'lambda':_lambda, 'log_interval':log_interval, 'saved_model_path':saved_model_path, 'render':render, 'no_training':no_training, 'abstime': time.time()}))
+
     model = Model(policy=policy, ob_space=ob_space, ob_dtype=ob_dtype, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, nstack=nstack, num_procs=num_procs, ent_coef=ent_coef, vf_coef=vf_coef,
         max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule)
     if saved_model_path:
@@ -183,20 +190,30 @@ def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timeste
 
     nbatch = nenvs*nsteps
     tstart = time.time()
+    logger.record_tabular('t_start', tstart)
+    logger.dump_tabular()
     for update in range(1, total_timesteps//nbatch+1):
         obs, states, rewards, masks, actions, values = runner.run()
-        if no_training: continue
-        policy_loss, value_loss, policy_entropy = model.train(obs, states, rewards, masks, actions, values)
+        if not no_training:
+            policy_loss, value_loss, policy_entropy = model.train(obs, states, rewards, masks, actions, values)
+        else:
+            policy_loss, value_loss, policy_entropy = 0.0, 0.0, 0.0
         nseconds = time.time()-tstart
-        fps = int((update*nbatch)/nseconds)
+        sps = int((update*nbatch)/nseconds) #timesteps per second
+        fps = frameskip * sps
         if update % log_interval == 0 or update == 1:
             ev = explained_variance(values, rewards)
-            logger.record_tabular("nupdates", update)
-            logger.record_tabular("total_timesteps", update*nbatch)
+            logger.record_tabular('t', nseconds)
+            logger.record_tabular("nupdates", 0 if no_training else update)
+            logger.record_tabular("total_timesteps", update*nbatch) # for backward compatibility
             logger.record_tabular("fps", fps)
+            logger.record_tabular("ntimesteps", update*nbatch)
+            logger.record_tabular("nframes", update*nbatch*frameskip)
             logger.record_tabular("policy_entropy", float(policy_entropy))
             logger.record_tabular("value_loss", float(value_loss))
+            logger.record_tabular("policy_loss", float(policy_loss))
             logger.record_tabular("explained_variance", float(ev))
+            logger.record_tabular("average_value", float(np.average(values)))
             logger.dump_tabular()
             if logger.get_dir(): model.save(osp.join(logger.get_dir(), "model"))
     env.close()
