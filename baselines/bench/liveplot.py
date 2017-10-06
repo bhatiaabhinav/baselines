@@ -26,7 +26,7 @@ def load_progress(fname):
         lines = f.readlines()
         for line in lines:
             log = json.loads(line)
-            logs.append(log)
+            if 'nupdates' in log: logs.append(log)
     return {
         'policy_entropy': [log['policy_entropy'] for log in logs],
         'explained_variance': [log['explained_variance'] for log in logs],

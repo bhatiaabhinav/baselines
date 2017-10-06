@@ -87,6 +87,7 @@ class FileWatchThread(Thread):
         self.kwargs = kwargs
 
     def process_log(self, line):
+        line = line.replace('NaN', '0.0')
         obj = json.loads(line)
         if 't_start' in obj: #its the header line
             self.tstart = obj['t_start']
