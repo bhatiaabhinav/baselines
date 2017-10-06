@@ -30,3 +30,9 @@ src
 
 *.egg-info
 .cache
+
+# visual studio stuff
+*.pyproj
+*.sln
+/.vs/
+/scripts
