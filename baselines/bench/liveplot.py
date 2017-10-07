@@ -1,7 +1,6 @@
 from baselines import bench
 import numpy as np
 import matplotlib.pyplot as plt
-from drawnow import drawnow
 import os
 import time
 
