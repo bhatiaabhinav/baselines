@@ -92,8 +92,8 @@ def main():
     parser.add_argument('--_lambda', help='lambda=1 => use nsteps returns. lambda=0 => use 1 step returns. intermidiate values cause averaging of various step returns. Equivalent to eligibility traces', type=float, default=0.8)
     parser.add_argument('--logdir', help='logs will be saved to {logdir}/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. run_no gets incremented automatically based on existance of previous runs in {logdir}/{env}/ . No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
     parser.add_argument('--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default = None)
-    parser.add_argument('--render', help='whether or not to render the env. False by default', default=False)
-    parser.add_argument('--no_training', help='whether to just play without training', default=False)
+    parser.add_argument('--render', help='whether or not to render the env. False by default', type=bool, default=False)
+    parser.add_argument('--no_training', help='whether to just play without training', type=bool, default=False)
     args = parser.parse_args()
     if args.logdir:
         for run_no in range(int(1e6)):
