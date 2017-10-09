@@ -2,6 +2,7 @@ from baselines import bench
 import numpy as np
 import matplotlib.pyplot as plt
 from drawnow import drawnow
+import sys
 import os
 import ntpath
 import time
@@ -62,7 +63,22 @@ def watch(filename, indefinitely=True):
                 else:
                     break
 
+def find_global_tstart():
+    ans = sys.float_info.max
+    files = episodes_fnames + [progress_fname] if os.path.exists(progress_fname) else episodes_fnames
+    for f in files:
+        with open(f, 'r') as fp:
+            line1 = fp.readline()
+            obj = json.loads(line1)
+            if 't_start' in obj:
+                tstart = obj['t_start']
+                if tstart < ans:
+                    ans = tstart
+    return ans
+
 es = Elasticsearch()
+
+global_tstart = find_global_tstart()
 
 # first put params file in:
 if os.path.exists(params_fname):
@@ -98,6 +114,7 @@ class FileWatchThread(Thread):
             if self.env_rank: obj['env_rank'] = self.env_rank
             if self.tstart and 't' in obj:
                 obj['abstime'] = datetime.utcfromtimestamp(self.tstart + obj['t'])
+                obj['t'] = obj['t'] + self.tstart - global_tstart
             action = {}
             if self.doc_type == 'frame':
                 action['_id'] = str(self.env_rank) + '_' + str(obj['frame_no'])
