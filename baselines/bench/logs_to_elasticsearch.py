@@ -22,7 +22,8 @@ parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFo
 parser.add_argument('--env', help='environment ID', default='BreakoutNoFrameskip-v4')
 parser.add_argument('--logdir', help='logs will be read from logdir/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR', default=os.getenv('OPENAI_LOGDIR'))
 parser.add_argument('--run_no', help='Run no', default=0)
-parser.add_argument('--index_frames', default=False)
+parser.add_argument('--index_frames', type=bool, default=False)
+parser.add_argument('--t_max', type=float, default=sys.float_info.max)
 
 args = parser.parse_args()
 
@@ -138,7 +139,12 @@ class FileWatchThread(Thread):
             if line:
                 action = self.process_log(line)
                 if action:
-                    yield action
+                    if 't' in action['_source'] and action['_source']['t'] > args.t_max:
+                        print('Stopped reading {0} since t exceeded specified t_max'.format(ntpath.basename(self.filename)))
+                        yield None # to signal to index the final batch
+                        break
+                    else:
+                        yield action
             else:
                 yield None # to signal to index the batch so far
 
