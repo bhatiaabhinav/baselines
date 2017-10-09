@@ -2,6 +2,7 @@ from baselines import bench
 import numpy as np
 import matplotlib.pyplot as plt
 from drawnow import drawnow
+import sys
 import os
 import ntpath
 import time
@@ -21,7 +22,8 @@ parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFo
 parser.add_argument('--env', help='environment ID', default='BreakoutNoFrameskip-v4')
 parser.add_argument('--logdir', help='logs will be read from logdir/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR', default=os.getenv('OPENAI_LOGDIR'))
 parser.add_argument('--run_no', help='Run no', default=0)
-parser.add_argument('--index_frames', default=False)
+parser.add_argument('--index_frames', type=bool, default=False)
+parser.add_argument('--t_max', type=float, default=sys.float_info.max)
 
 args = parser.parse_args()
 
@@ -62,7 +64,22 @@ def watch(filename, indefinitely=True):
                 else:
                     break
 
+def find_global_tstart():
+    ans = sys.float_info.max
+    files = episodes_fnames + [progress_fname] if os.path.exists(progress_fname) else episodes_fnames
+    for f in files:
+        with open(f, 'r') as fp:
+            line1 = fp.readline()
+            obj = json.loads(line1)
+            if 't_start' in obj:
+                tstart = obj['t_start']
+                if tstart < ans:
+                    ans = tstart
+    return ans
+
 es = Elasticsearch()
+
+global_tstart = find_global_tstart()
 
 # first put params file in:
 if os.path.exists(params_fname):
@@ -98,6 +115,7 @@ class FileWatchThread(Thread):
             if self.env_rank: obj['env_rank'] = self.env_rank
             if self.tstart and 't' in obj:
                 obj['abstime'] = datetime.utcfromtimestamp(self.tstart + obj['t'])
+                obj['t'] = obj['t'] + self.tstart - global_tstart
             action = {}
             if self.doc_type == 'frame':
                 action['_id'] = str(self.env_rank) + '_' + str(obj['frame_no'])
@@ -121,7 +139,12 @@ class FileWatchThread(Thread):
             if line:
                 action = self.process_log(line)
                 if action:
-                    yield action
+                    if 't' in action['_source'] and action['_source']['t'] > args.t_max:
+                        print('Stopped reading {0} since t exceeded specified t_max'.format(ntpath.basename(self.filename)))
+                        yield None # to signal to index the final batch
+                        break
+                    else:
+                        yield action
             else:
                 yield None # to signal to index the batch so far
 
