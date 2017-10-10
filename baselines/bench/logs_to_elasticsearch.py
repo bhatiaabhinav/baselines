@@ -1,7 +1,6 @@
 from baselines import bench
 import numpy as np
 import matplotlib.pyplot as plt
-from drawnow import drawnow
 import sys
 import os
 import ntpath
@@ -24,7 +23,7 @@ parser.add_argument('--logdir', help='logs will be read from logdir/{env}/{run_n
 parser.add_argument('--run_no', help='Run no', default=0)
 parser.add_argument('--index_frames', type=bool, default=False)
 parser.add_argument('--t_max', type=float, default=sys.float_info.max)
-parser.add_argument('--skip_frames', type=int, default=10)
+parser.add_argument('--skip_frames', type=int, default=60)
 
 args = parser.parse_args()
 
@@ -113,7 +112,7 @@ class FileWatchThread(Thread):
         else: # must be a log line
             obj['env_id'] = str(args.env)
             obj['run_no'] = str(args.run_no)
-            if self.env_rank: obj['env_rank'] = self.env_rank
+            if self.env_rank is not None: obj['env_rank'] = self.env_rank
             if self.tstart and 't' in obj:
                 obj['abstime'] = datetime.utcfromtimestamp(self.tstart + obj['t'])
                 obj['t'] = obj['t'] + self.tstart - global_tstart
