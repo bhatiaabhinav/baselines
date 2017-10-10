@@ -24,6 +24,7 @@ parser.add_argument('--logdir', help='logs will be read from logdir/{env}/{run_n
 parser.add_argument('--run_no', help='Run no', default=0)
 parser.add_argument('--index_frames', type=bool, default=False)
 parser.add_argument('--t_max', type=float, default=sys.float_info.max)
+parser.add_argument('--skip_frames', type=int, default=10)
 
 args = parser.parse_args()
 
@@ -144,7 +145,14 @@ class FileWatchThread(Thread):
                         yield None # to signal to index the final batch
                         break
                     else:
-                        yield action
+                        if 'frame_no' in action['_source']:
+                            if action['_source']['frame_no'] % args.skip_frames == 0:
+                                yield action
+                            else:
+                                # ignore this frame
+                                pass
+                        else:
+                            yield action
             else:
                 yield None # to signal to index the batch so far
 
