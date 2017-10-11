@@ -18,6 +18,7 @@ except ImportError:
 
 import argparse
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument('--es_host', help='Elasticsearch host', default='localhost')
 parser.add_argument('--env', help='environment ID', default='BreakoutNoFrameskip-v4')
 parser.add_argument('--logdir', help='logs will be read from logdir/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR', default=os.getenv('OPENAI_LOGDIR'))
 parser.add_argument('--run_no', help='Run no', default=0)
@@ -77,7 +78,7 @@ def find_global_tstart():
                     ans = tstart
     return ans
 
-es = Elasticsearch()
+es = Elasticsearch(args.es_host)
 
 global_tstart = find_global_tstart()
 
