@@ -35,4 +35,3 @@ src
 *.pyproj
 *.sln
 /.vs/
-/scripts
