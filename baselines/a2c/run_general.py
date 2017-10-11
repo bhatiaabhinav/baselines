@@ -63,7 +63,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nstep
         ent_coef = 0.005
     elif policy == 'fcwithbias':
         policy_fn = FcWithBiasPolicy
-        ent_coeff = 0.005
+        ent_coef = 0.015
     elif policy == 'ers':
         policy_fn = ErsPolicy
     elif policy == 'ers2':

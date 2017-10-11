@@ -381,11 +381,15 @@ class FcWithBiasPolicy(object):
             h4 = fc(h3, 'fc3', nh=128, init_scale=np.sqrt(2))
             dst_bias = fc(h4, 'dst_bias', nh=nbases, init_scale=np.sqrt(2))
             src_bias = fc(h4, 'src_bias', nh=nbases, init_scale=np.sqrt(2))
+            no_op = fc(h4, 'no_op', 1, act=lambda x:x)
             pins = []
             for dest in range(nbases):
                 for src in range(nbases):
-                    input_neurons = tf.concat([h4, dst_bias[:, dest:dest+1], src_bias[:, src:src+1]], axis=-1)
-                    pin_output = fc(input_neurons, 'a_{0}_{1}'.format(dest, src), 1, act=lambda x:x)
+                    if dest != src:
+                        input_neurons = tf.concat([h4, dst_bias[:, dest:dest+1], src_bias[:, src:src+1]], axis=-1)
+                        pin_output = fc(input_neurons, 'a_{0}_{1}'.format(dest, src), 1, act=lambda x:x)
+                    else:
+                        pin_output = no_op
                     pins.append(pin_output)
             pi = tf.concat(pins, axis=-1)
             vf = fc(h4, 'v', 1, act=lambda x:x)
