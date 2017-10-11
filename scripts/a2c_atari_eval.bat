@@ -1,0 +1,1 @@
+"%GYM_PYTHON%" -m baselines.a2c.run_atari --no_training=True --env=%1 --saved_model="%OPENAI_LOGDIR%\%1\%2\model" %3 %4 %5 %6 %7 %8 %9
