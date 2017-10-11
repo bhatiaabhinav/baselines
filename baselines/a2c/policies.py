@@ -365,3 +365,44 @@ class ErsPolicy3(object):
         self.value = value
         self.entropy = entropy
 
+class FcWithBiasPolicy(object):
+
+    def __init__(self, sess, ob_space, ob_dtype, ac_space, nenv, nsteps, nstack, reuse=False):
+        nbatch = nenv*nsteps
+        nh, nw, nc = ob_space.shape
+        ob_shape = (nbatch, nh, nw, nc*nstack)
+        nact = ac_space.n
+        nbases = int(np.sqrt(nact))
+        X = tf.placeholder(ob_dtype, ob_shape) #obs
+        with tf.variable_scope("model", reuse=reuse):
+            h1 = conv_to_fc(X)
+            h2 = fc(h1, 'fc1', nh=512, init_scale=np.sqrt(2))
+            h3 = fc(h2, 'fc2', nh=256, init_scale=np.sqrt(2))
+            h4 = fc(h3, 'fc3', nh=128, init_scale=np.sqrt(2))
+            dst_bias = fc(h4, 'dst_bias', nh=nbases, init_scale=np.sqrt(2))
+            src_bias = fc(h4, 'src_bias', nh=nbases, init_scale=np.sqrt(2))
+            pins = []
+            for dest in range(nbases):
+                for src in range(nbases):
+                    input_neurons = tf.concat([h4, dst_bias[:, dest:dest+1], src_bias[:, src:src+1]], axis=-1)
+                    pin_output = fc(input_neurons, 'a_{0}_{1}'.format(dest, src), 1, act=lambda x:x)
+                    pins.append(pin_output)
+            pi = tf.concat(pins, axis=-1)
+            vf = fc(h4, 'v', 1, act=lambda x:x)
+
+        v0 = vf[:, 0]
+        a0 = sample(pi)
+        self.initial_state = [] #not stateful
+
+        def step(ob, *_args, **_kwargs):
+            a, v = sess.run([a0, v0], {X:ob})
+            return a, v, [] #dummy state
+
+        def value(ob, *_args, **_kwargs):
+            return sess.run(v0, {X:ob})
+
+        self.X = X
+        self.pi = pi
+        self.vf = vf
+        self.step = step
+        self.value = value
