@@ -14,6 +14,9 @@ def worker(remote, env_fn_wrapper):
         elif cmd == 'reset':
             ob = env.reset()
             remote.send(ob)
+        elif cmd == 'seed':
+            result = env.seed(data)
+            remote.send(result)
         elif cmd == 'close':
             remote.close()
             break
@@ -64,6 +67,11 @@ class SubprocVecEnv(VecEnv):
     def reset(self):
         for remote in self.remotes:
             remote.send(('reset', None))
+        return np.stack([remote.recv() for remote in self.remotes])
+
+    def seed(self, seeds):
+        for remote, seed in zip(self.remotes, seeds):
+            remote.send(('seed', seed))
         return np.stack([remote.recv() for remote in self.remotes])
 
     def render(self, close=False, mode='human'):
