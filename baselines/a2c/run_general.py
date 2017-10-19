@@ -103,10 +103,11 @@ def main():
     parser.add_argument('--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default = None)
     parser.add_argument('--render', help='whether or not to render the env. False by default', type=bool, default=False)
     parser.add_argument('--no_training', help='whether to just play without training', type=bool, default=False)
+    parser.add_argument('--run_no_prefix', default='run')
     args = parser.parse_args()
     if args.logdir:
         for run_no in range(int(1e6)):
-            logdir = os.path.join(args.logdir, args.env, str(run_no))
+            logdir = os.path.join(args.logdir, args.env, args.run_no_prefix + '_' + str(run_no).zfill(3))
             if not os.path.isdir(logdir):
                 os.putenv('OPENAI_LOGDIR', logdir)
                 logger.reset()
