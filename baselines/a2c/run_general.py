@@ -98,7 +98,7 @@ def main():
     parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm', 'fc', 'ers', 'ers2', 'ers3', 'fcwithbias', 'biaslc', 'random', 'noop', 'greedy'], default='fc')
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--ecschedule', help='Entropy coefficient schedule', choices=['constant', 'linear'], default='constant')
-    parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=int, default=10)
+    parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=float, default=7.2) # 5000 episodes
     parser.add_argument('--num_cpu', help='Number of parallel environments', type=int, default=16)
     parser.add_argument('--nsteps', help='an update happens every nsteps timesteps for each env', type=int, default=5)
     parser.add_argument('--nstack', help='how many frames to stack to create one obs', type=int, default=1)
