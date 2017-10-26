@@ -35,3 +35,4 @@ src
 *.pyproj
 *.sln
 /.vs/
+/.vscode/

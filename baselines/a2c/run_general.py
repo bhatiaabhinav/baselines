@@ -7,7 +7,7 @@ from baselines import bench
 from baselines.a2c.a2c import learn
 from baselines.a2c.greedy import optimize
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
-from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy, FcPolicy, ErsPolicy, ErsPolicy2, ErsPolicy3, FcWithBiasPolicy, RandomPolicy, NoOpPolicy
+from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy, FcPolicy, ErsPolicy, ErsPolicy2, ErsPolicy3, FcWithBiasPolicy, BiasLcPolicy, RandomPolicy, NoOpPolicy
 import gym_ERSLE
 
 class ObsExpandWrapper(gym.Wrapper):
@@ -38,7 +38,7 @@ class ObsExpandWrapper(gym.Wrapper):
             ob = ob[:, :, np.newaxis]
         return ob, r, d, _
 
-def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nsteps, nstack, _lambda, saved_model_path, render, no_training):
+def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, ecschedule, num_cpu, nsteps, nstack, _lambda, saved_model_path, render, no_training):
     
     def make_env(rank):
         def _thunk():
@@ -61,9 +61,12 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nstep
         policy_fn = LnLstmPolicy
     elif policy == 'fc':
         policy_fn = FcPolicy
-        ent_coef = 0.005
+        ent_coef = 0.01
     elif policy == 'fcwithbias':
         policy_fn = FcWithBiasPolicy
+        ent_coef = 0.01
+    elif policy == 'biaslc':
+        policy_fn = BiasLcPolicy
         ent_coef = 0.01
     elif policy == 'ers':
         policy_fn = ErsPolicy
@@ -82,7 +85,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, num_cpu, nstep
         optimize(policy, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), frameskip=1, lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training,
               nsteps=nsteps, nstack=nstack, _lambda=_lambda, ent_coef=ent_coef)
     else:
-        learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), frameskip=1, lrschedule=lrschedule, saved_model_path=saved_model_path, render=render, no_training=no_training,
+        learn(policy_fn, env, seed, ob_dtype=ob_dtype, total_timesteps=int(num_frames), frameskip=1, lrschedule=lrschedule, ecschedule=ecschedule, saved_model_path=saved_model_path, render=render, no_training=no_training,
               nsteps=nsteps, nstack=nstack, _lambda=_lambda, ent_coef=ent_coef)
     env.close()
 
@@ -92,9 +95,10 @@ def main():
     parser.add_argument('--env', help='environment ID', default='ERSEnv-v2')
     parser.add_argument('--ob_dtype', help='datatype of observations eg. uint8, float32', default='float32')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm', 'fc', 'ers', 'ers2', 'ers3', 'fcwithbias', 'random', 'noop', 'greedy'], default='fc')
+    parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm', 'fc', 'ers', 'ers2', 'ers3', 'fcwithbias', 'biaslc', 'random', 'noop', 'greedy'], default='fc')
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
-    parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=int, default=40)
+    parser.add_argument('--ecschedule', help='Entropy coefficient schedule', choices=['constant', 'linear'], default='constant')
+    parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=int, default=10)
     parser.add_argument('--num_cpu', help='Number of parallel environments', type=int, default=16)
     parser.add_argument('--nsteps', help='an update happens every nsteps timesteps for each env', type=int, default=5)
     parser.add_argument('--nstack', help='how many frames to stack to create one obs', type=int, default=1)
@@ -116,7 +120,7 @@ def main():
             else:
                 run_no += 1
     train(args.env, ob_dtype=args.ob_dtype, num_frames=1e6 * args.million_frames, seed=args.seed, 
-        policy=args.policy, lrschedule=args.lrschedule, num_cpu=args.num_cpu, nsteps=args.nsteps, nstack=args.nstack, _lambda=args._lambda,
+        policy=args.policy, lrschedule=args.lrschedule, ecschedule=args.ecschedule, num_cpu=args.num_cpu, nsteps=args.nsteps, nstack=args.nstack, _lambda=args._lambda,
         saved_model_path=args.saved_model, render=args.render, no_training=args.no_training)
 
 if __name__ == '__main__':

@@ -21,7 +21,7 @@ class Model(object):
 
     def __init__(self, policy, ob_space, ob_dtype, ac_space, nenvs, nsteps, nstack, num_procs,
             ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, lr=7e-4,
-            alpha=0.99, epsilon=1e-5, total_timesteps=int(80e6), lrschedule='linear'):
+            alpha=0.99, epsilon=1e-5, total_timesteps=int(80e6), lrschedule='linear', ecschedule='linear'):
         config = tf.ConfigProto(allow_soft_placement=True,
                                 intra_op_parallelism_threads=num_procs,
                                 inter_op_parallelism_threads=num_procs)
@@ -34,6 +34,7 @@ class Model(object):
         ADV = tf.placeholder(tf.float32, [nbatch])
         R = tf.placeholder(tf.float32, [nbatch])
         LR = tf.placeholder(tf.float32, [])
+        EC = tf.placeholder(tf.float32, [])
 
         step_model = policy(sess, ob_space, ob_dtype, ac_space, nenvs, 1, nstack, reuse=False)
         train_model = policy(sess, ob_space, ob_dtype, ac_space, nenvs, nsteps, nstack, reuse=True)
@@ -45,7 +46,7 @@ class Model(object):
             entropy = train_model.entropy
         else:
             entropy = tf.reduce_mean(cat_entropy(train_model.pi))
-        loss = pg_loss - entropy*ent_coef + vf_loss * vf_coef
+        loss = pg_loss - entropy * EC + vf_loss * vf_coef
 
         params = find_trainable_variables("model")
         grads = tf.gradients(loss, params)
@@ -56,15 +57,17 @@ class Model(object):
         _train = trainer.apply_gradients(grads)
 
         lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule)
+        ec = Scheduler(v=ent_coef, nvalues=total_timesteps, schedule=ecschedule)
 
         def train(obs, states, rewards, masks, actions, values):
             advs = rewards - values
             for step in range(len(obs)):
                 cur_lr = lr.value()
+                cur_ec = ec.value()
             if policy in [ErsPolicy2, ErsPolicy3]:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr, train_model.A:actions}
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr, EC:cur_ec, train_model.A:actions}
             else:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr}
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr, EC:cur_ec}
             if states != []:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -163,7 +166,7 @@ class Runner(object):
         mb_masks = mb_masks.flatten()
         return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
-def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timesteps=int(80e6), frameskip=1, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
+def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timesteps=int(80e6), frameskip=1, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', ecschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -175,10 +178,10 @@ def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timeste
     if logger.get_dir():
         with open(osp.join(logger.get_dir(), 'params.json'), 'w') as f:
             f.write(json.dumps({'policy':str(policy), 'env_id':env.id, 'nenvs':nenvs, 'seed':seed, 'ac_space':str(ac_space), 'ob_space':str(ob_space), 'ob_type':ob_dtype, 'nsteps':nsteps, 'nstack':nstack, 'total_timesteps':total_timesteps, 'frameskip':frameskip, 'vf_coef':vf_coef, 'ent_coef':ent_coef,
-                                'max_grad_norm':max_grad_norm, 'lr':lr, 'lrschedule':lrschedule, 'epsilon':epsilon, 'alpha':alpha, 'gamma':gamma, 'lambda':_lambda, 'log_interval':log_interval, 'saved_model_path':saved_model_path, 'render':render, 'no_training':no_training, 'abstime': time.time()}))
+                                'max_grad_norm':max_grad_norm, 'lr':lr, 'lrschedule':lrschedule, 'ecschedule':ecschedule, 'epsilon':epsilon, 'alpha':alpha, 'gamma':gamma, 'lambda':_lambda, 'log_interval':log_interval, 'saved_model_path':saved_model_path, 'render':render, 'no_training':no_training, 'abstime': time.time()}))
 
     model = Model(policy=policy, ob_space=ob_space, ob_dtype=ob_dtype, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, nstack=nstack, num_procs=num_procs, ent_coef=ent_coef, vf_coef=vf_coef,
-        max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule)
+        max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule, ecschedule=ecschedule)
     if saved_model_path:
         try:
             model.load(saved_model_path)
@@ -216,6 +219,7 @@ def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timeste
             logger.record_tabular("average_value", float(np.average(values)))
             logger.dump_tabular()
             if logger.get_dir(): model.save(osp.join(logger.get_dir(), "model"))
+    if logger.get_dir(): model.save(osp.join(logger.get_dir(), "model"))
     env.close()
 
 if __name__ == '__main__':
