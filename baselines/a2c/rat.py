@@ -179,8 +179,8 @@ class Experience:
 
 class RAT:
     def __init__(self, env: gym.Env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):
-        
-        assert n_recommenders >=2 and n_recommenders%2==0
+        if self.n_recommenders <= 0:
+            raise ValueError('There should be atleast one recommender')
         config = tf.ConfigProto(device_count = {'GPU': 0})
         sess = tf.Session(config=config)
 
@@ -287,6 +287,8 @@ class RAT:
 
     def _should_select_recommenders(self):
         ans = self.use_beam_search and self.episodes % self.beam_selection_interval == 0
+        if ans and self.n_recommenders % 2 != 0:
+            raise RuntimeError('To do selection, number of recommenders should be even')
         return ans
 
     def _should_update_duplicate_q(self):
