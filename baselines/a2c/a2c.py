@@ -50,10 +50,11 @@ class Model(object):
 
         params = find_trainable_variables("model")
         grads = tf.gradients(loss, params)
-        if max_grad_norm is not None:
-            grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+        #if max_grad_norm is not None:
+        #    grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         grads = list(zip(grads, params))
-        trainer = tf.train.RMSPropOptimizer(learning_rate=LR, decay=alpha, epsilon=epsilon)
+        #trainer = tf.train.RMSPropOptimizer(learning_rate=LR, decay=alpha, epsilon=epsilon)
+        trainer = tf.train.AdamOptimizer(learning_rate=LR)
         _train = trainer.apply_gradients(grads)
 
         lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule)
@@ -61,6 +62,8 @@ class Model(object):
 
         def train(obs, states, rewards, masks, actions, values):
             advs = rewards - values
+            advs -= np.mean(advs)
+            advs /= (np.std(advs) + 0.01)
             for step in range(len(obs)):
                 cur_lr = lr.value()
                 cur_ec = ec.value()
@@ -124,7 +127,7 @@ class Runner(object):
         self.obs[:, :, :, -1] = obs[:, :, :, 0]
 
     def run(self):
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones = [],[],[],[],[]
+        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_info = [],[],[],[],[],[]
         mb_states = self.states
         for n in range(self.nsteps):
             actions, values, states = self.model.step(self.obs, self.states, self.dones)
@@ -133,7 +136,7 @@ class Runner(object):
             mb_values.append(values)
             mb_dones.append(self.dones)
             obs, rewards, dones, _ = self.env.step(actions)
-            self.env.render(mode='human') if self.render else self.env.render(close=True)
+            #self.env.render(mode='human') if self.render else self.env.render(close=True)
             self.states = states
             self.dones = dones
             for n, done in enumerate(dones):
@@ -141,6 +144,7 @@ class Runner(object):
                     self.obs[n] = self.obs[n]*0
             self.update_obs(obs)
             mb_rewards.append(rewards)
+            mb_info.extend(_)
         mb_dones.append(self.dones)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype).swapaxes(1, 0).reshape(self.batch_ob_shape)
@@ -158,15 +162,17 @@ class Runner(object):
             one_step_advantages = rewards + (1 - dones_appended[:-1]) * self.gamma * values_appended[1:] - values_appended[:-1]
             generalized_advantages = discount_with_dones(one_step_advantages, dones, self.gamma * self._lambda)
             # generalized_advantages becomes same as (nstep discounted returns - values) when _lambda=1 (as in standard A2C/A3C implementation)
+            # advantage clipping:
+            generalized_advantages = np.clip(generalized_advantages, -1, 1)
             rewards = values + np.asarray(generalized_advantages)
             mb_rewards[n] = rewards
         mb_rewards = mb_rewards.flatten()
         mb_actions = mb_actions.flatten()
         mb_values = mb_values.flatten()
         mb_masks = mb_masks.flatten()
-        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
+        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, mb_info
 
-def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timesteps=int(80e6), frameskip=1, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', ecschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
+def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timesteps=int(80e6), frameskip=1, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=2.5e-4, lrschedule='linear', ecschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, _lambda=1.0, log_interval=100, saved_model_path=None, render=False, no_training=False):
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -196,7 +202,7 @@ def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timeste
     logger.record_tabular('t_start', tstart)
     logger.dump_tabular()
     for update in range(1, total_timesteps//nbatch+1):
-        obs, states, rewards, masks, actions, values = runner.run()
+        obs, states, rewards, masks, actions, values, info = runner.run()
         if not no_training:
             policy_loss, value_loss, policy_entropy = model.train(obs, states, rewards, masks, actions, values)
         else:
@@ -217,6 +223,17 @@ def learn(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_timeste
             logger.record_tabular("policy_loss", float(policy_loss))
             logger.record_tabular("explained_variance", float(ev))
             logger.record_tabular("average_value", float(np.average(values)))
+            if 'base0' in info[0]:
+                for i in range(20):
+                    base = 'base{0}'.format(i)
+                    if base in info[0]:
+                        alloc = np.average([inf[base] for inf in info])
+                        logger.record_tabular("av_" + base, alloc)
+            if 'ambs_relocating' in info[0]:
+                reloc = np.average([inf['ambs_relocating'] for inf in info])
+                logger.record_tabular("av_ambs_relocating", reloc)
+            action0 = (float(len(actions) - np.count_nonzero(actions)) * 100) / len(actions)
+            logger.record_tabular("action0_percentage", action0)
             logger.dump_tabular()
             if logger.get_dir(): model.save(osp.join(logger.get_dir(), "model"))
     if logger.get_dir(): model.save(osp.join(logger.get_dir(), "model"))
