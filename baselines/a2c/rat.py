@@ -573,7 +573,7 @@ np.random.seed(0)
 
 import gym_ERSLE
 env = ERSEnvWrapper(gym.make('pyERSEnv-v3'))
-env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True)
+env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
 gym.logger.setLevel(logging.WARN)
 rat = RAT(env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=100, dup_q_update_interval=32, 
         update_interval=1, minibatch_size=32, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-2, render=False)

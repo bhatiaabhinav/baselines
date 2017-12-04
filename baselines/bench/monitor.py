@@ -16,14 +16,15 @@ class Monitor(Wrapper):
     EXT = "monitor.json"
     f = None
 
-    def __init__(self, env, filename, allow_early_resets=False):
+    def __init__(self, env, filename, allow_early_resets=False, log_frames=True):
         Wrapper.__init__(self, env=env)
         self.tstart = time.time()
         if filename is None:
             self.f = None
             self.f_frames = None
             self.logger = None
-            self.logger_frames = None
+            if log_frames:
+                self.logger_frames = None
         else:
             if not filename.endswith(Monitor.EXT):
                 filename = filename + "." + Monitor.EXT
@@ -31,11 +32,13 @@ class Monitor(Wrapper):
             self.f = open(filename, "wt")
             self.f_frames = open(filename_frames, "wt")
             self.logger = JSONLogger(self.f)
-            self.logger_frames = JSONLogger(self.f_frames)
+            if log_frames:
+                self.logger_frames = JSONLogger(self.f_frames)
             self.logger.writekvs({"t_start": self.tstart, "gym_version": gym.__version__,
                 "env_id": env.spec.id if env.spec else 'Unknown'})
-            self.logger_frames.writekvs({"t_start": self.tstart, "gym_version": gym.__version__,
-                "env_id": env.spec.id if env.spec else 'Unknown'})
+            if log_frames:
+                self.logger_frames.writekvs({"t_start": self.tstart, "gym_version": gym.__version__,
+                    "env_id": env.spec.id if env.spec else 'Unknown'})
         self.allow_early_resets = allow_early_resets
         self.rewards = None
         self.needs_reset = True
@@ -45,7 +48,9 @@ class Monitor(Wrapper):
         self.current_metadata = {} # extra info that gets injected into each log entry
         # Useful for metalearning where we're modifying the environment externally
         # But want our logs to know about these modifications
-        self.frames_info_q = queue.Queue(100)
+        if log_frames:
+            self.frames_info_q = queue.Queue(100)
+        self.log_frames = log_frames
 
     def __getstate__(self): # XXX
         d = self.__dict__.copy()
@@ -79,7 +84,7 @@ class Monitor(Wrapper):
         if self.needs_reset:
             raise RuntimeError("Tried to step environment that needs reset")
         ob, rew, done, info = self.env.step(action)
-        if self.logger_frames:
+        if self.log_frames and self.logger_frames:
             if not info: info = {}
             frameinfo = {"frame_no":self.total_steps, "episode_frame_no":len(self.rewards), "episode_no": len(self.episode_rewards), 
                         "frame_reward": rew, "frame_action": action, "frame_isTerminal": done, "frame_info": dict(info), "t":round(time.time() - self.tstart, 6)}
@@ -96,7 +101,7 @@ class Monitor(Wrapper):
             epinfo.update(self.current_metadata)
             if self.logger:
                 self.logger.writekvs(epinfo)
-            if self.logger_frames:
+            if self.log_frames and self.logger_frames:
                 while not self.frames_info_q.empty(): self.logger_frames.writekvs(self.frames_info_q.get())
             self.episode_rewards.append(eprew)
             self.episode_lengths.append(eplen)
