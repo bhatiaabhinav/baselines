@@ -72,7 +72,7 @@ def train(env_id, ob_dtype, num_frames, seed, policy, lrschedule, ecschedule, nu
             env = gym.make(env_id)
             env.seed(seed + rank)
             env = bench.Monitor(env, logger.get_dir() and 
-                os.path.join(logger.get_dir(), "{}.monitor.json".format(rank)), allow_early_resets = (policy in ('greedy', 'ga')))
+                os.path.join(logger.get_dir(), "{}.monitor.json".format(rank)), allow_early_resets = (policy in ('greedy', 'ga', 'rat')))
             gym.logger.setLevel(logging.WARN)
             return ObsExpandWrapper(env)
             #return NoopFrameskipWrapper(ObsExpandWrapper(env))
@@ -126,7 +126,7 @@ def main():
     parser.add_argument('--env', help='environment ID', default='ERSEnv-v2')
     parser.add_argument('--ob_dtype', help='datatype of observations eg. uint8, float32', default='float32')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm', 'fc', 'ers', 'ers2', 'ers3', 'fcwithbias', 'biaslc', 'random', 'noop', 'greedy', 'ga'], default='fc')
+    parser.add_argument('--policy', help='Policy architecture', choices=['cnn', 'lstm', 'lnlstm', 'fc', 'ers', 'ers2', 'ers3', 'fcwithbias', 'biaslc', 'random', 'noop', 'greedy', 'ga', 'rat'], default='fc')
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--ecschedule', help='Entropy coefficient schedule', choices=['constant', 'linear'], default='constant')
     parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=float, default=7.2) # 5000 = 625 * 8 episodes
@@ -151,9 +151,12 @@ def main():
                 break
             else:
                 run_no += 1
-    train(args.env, ob_dtype=args.ob_dtype, num_frames=1e6 * args.million_frames, seed=args.seed, 
-        policy=args.policy, lrschedule=args.lrschedule, ecschedule=args.ecschedule, num_cpu=args.num_cpu, nsteps=args.nsteps, nstack=args.nstack, _lambda=args._lambda,
-        saved_model_path=args.saved_model, render=args.render, no_training=args.no_training)
+    if args.policy == 'rat':
+        import baselines.a2c.rat
+    else:
+        train(args.env, ob_dtype=args.ob_dtype, num_frames=1e6 * args.million_frames, seed=args.seed, 
+            policy=args.policy, lrschedule=args.lrschedule, ecschedule=args.ecschedule, num_cpu=args.num_cpu, nsteps=args.nsteps, nstack=args.nstack, _lambda=args._lambda,
+            saved_model_path=args.saved_model, render=args.render, no_training=args.no_training)
     
 if __name__ == '__main__':
     main()
