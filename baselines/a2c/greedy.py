@@ -53,7 +53,7 @@ def allocate(env, target_allocation, num_ambs, current_allocation = None):
         while largest_sources[ls_index]['change'] < 0 and largest_gainers[lg_index]['change'] > 0:
             src = largest_sources[ls_index]['base']
             dst = largest_gainers[lg_index]['base']
-            action = dst * num_bases + src
+            action = 1 + dst * (num_bases - 1) + src if src < dst else dst * (num_bases - 1) + src
             obs, r, dones, info = env.step(get_actions(env.num_envs, action))
             av_reward += np.average(r)
             largest_sources[ls_index]['change'] += 1
@@ -80,7 +80,8 @@ def allocate_per_amb(env, allocation_per_amb, num_ambs, num_bases):
     # now place according to given alloc:
     for dest_base in allocation_per_amb:
         src_base = 0
-        action_id = dest_base * num_bases + src_base
+        #action_id = dest_base * num_bases + src_base
+        action_id = 1 + dest_base * (num_bases - 1) + src_base if src_base < dest_base else dest_base * (num_bases - 1) + src_base
         obs, r, dones, info = env.step(get_actions(env.num_envs, action_id))
         av_reward += np.average(r)
     return av_reward
