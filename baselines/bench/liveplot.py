@@ -19,6 +19,13 @@ args = parser.parse_args()
 logs_dir = os.path.join(args.logdir, args.env, str(args.run_no))
 fname = os.path.join(logs_dir, 'progress.json')
 
+params_fname = os.path.join(logs_dir, 'params.json')
+if os.path.exists(params_fname):
+    print('Params:')
+    with open(params_fname, 'r') as f:
+        for l in f.readlines():
+            print(l)
+
 def load_progress(fname):
     logs = []
     with open(fname, 'rt') as f:
