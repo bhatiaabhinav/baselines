@@ -11,6 +11,7 @@ class LnLstmPolicy(object):
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc*nstack)
         nact = ac_space.n
+        nbases = int(np.sqrt(nact))
         X = tf.placeholder(ob_dtype, ob_shape) #obs
         M = tf.placeholder(tf.float32, [nbatch]) #mask (done t-1)
         S = tf.placeholder(tf.float32, [nenv, nlstm*2]) #states
@@ -25,6 +26,20 @@ class LnLstmPolicy(object):
             h5, snew = lnlstm(xs, ms, S, 'lstm1', nh=nlstm)
             h5 = seq_to_batch(h5)
             pi = fc(h5, 'pi', nact, act=lambda x:x)
+            # base_bias = fc(h5, 'base_bias', nh=nbases, init_scale=np.sqrt(2), act=lambda x:x)
+            # no_op = fc(h5, 'no_op', 1, act=lambda x:x)
+            # pins = []
+            # for action in range(nact):
+            #     if action == 0:
+            #         pin_output = no_op
+            #     else:
+            #         dst = (action - 1) // nbases
+            #         src = (action - 1) % nbases
+            #         if src >= dst: src+=1
+            #         input_neurons = tf.concat([h5, base_bias[:, dst:dst+1], base_bias[:, src:src+1]], axis=-1)
+            #         pin_output = fc(input_neurons, 'a{0}'.format(action), 1, act=lambda x:x)
+            #     pins.append(pin_output)
+            # pi = tf.concat(pins, axis=-1)
             vf = fc(h5, 'v', 1, act=lambda x:x)
 
         v0 = vf[:, 0]
