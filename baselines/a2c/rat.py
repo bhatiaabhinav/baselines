@@ -179,7 +179,7 @@ class Experience:
 
 class RAT:
     def __init__(self, env: gym.Env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):
-        if self.n_recommenders <= 0:
+        if n_recommenders <= 0:
             raise ValueError('There should be atleast one recommender')
         config = tf.ConfigProto(device_count = {'GPU': 0})
         sess = tf.Session(config=config)
@@ -327,6 +327,7 @@ class RAT:
         scores = []
         print('Evaluating recommenders on base_seed {0}'.format(base_seed))
         for reco in self.recommenders:
+            #print('Reco #{0} :'.format(len(scores)))
             R = []
             for test_no in range(self.evaluation_envs_count):
                 seed = base_seed + test_no
@@ -338,6 +339,7 @@ class RAT:
                     a = reco.get_recommendations([obs])[0]
                     obs, r, d, _ = self.env.step(a)
                     ep_r += r
+                #print(ep_r)
                 R.append(ep_r)
             scores.append(np.average(R))
         print('Evalution scores: {0}'.format(scores))
@@ -451,82 +453,16 @@ class ERSEnvWrapper(gym.Wrapper):
         self.decision_interval = 1440
         self.n_ambs = 18
         self.n_bases = 6
-        self.action_space = gym.spaces.Box(-1, 1, shape=[self.n_bases])
-
-    def allocate(self, target_allocation, current_allocation = None):
-        if sum(target_allocation) != self.n_ambs:
-            raise ValueError('sum of target_allocation should be same as num_ambs')
-        obs, rewards, done, info = self.obs, [], False, {}
-        if current_allocation is None:
-            # figure out the current_allocation:
-            obs, r, done, info = self.env.step(0)
-            rewards.append(r)
-            if done:
-                return obs, rewards, done, info
-            current_allocation = []
-            for base in range(self.n_bases):
-                current_allocation.append(info['base' + str(base)])
-        assert sum(current_allocation) == self.n_ambs
-
-        change = (np.asarray(target_allocation) - np.asarray(current_allocation)).tolist()
-        assert(sum(change) == 0)
-        change = [{'base': i, 'change': change[i]} for i in range(self.n_bases)]
-        largest_sources = sorted(change, key=lambda item: item['change'])
-        largest_gainers = sorted(change, key=lambda item: item['change'], reverse=True)
-        ls_index = 0
-        lg_index = 0
-        while max(ls_index, lg_index) < self.n_bases:
-            while largest_sources[ls_index]['change'] < 0 and largest_gainers[lg_index]['change'] > 0:
-                src = largest_sources[ls_index]['base']
-                dst = largest_gainers[lg_index]['base']
-                action = 1 + dst * (self.n_bases - 1) + src if src < dst else dst * (self.n_bases - 1) + src
-                obs, r, done, info = self.env.step(action)
-                rewards.append(r)
-                if done:
-                    return obs, rewards, done, info
-                largest_sources[ls_index]['change'] += 1
-                largest_gainers[lg_index]['change'] -= 1
-            if largest_sources[ls_index]['change'] == 0:
-                ls_index += 1
-            if largest_gainers[lg_index]['change'] == 0:
-                lg_index += 1
-
-        for c in change:
-            assert(c['change'] == 0)
-
-        return obs, rewards, done, info
-
-    def get_target_allocation(self, action):
-        ambulanceIndex = 0
-        action = (action + 1)/2
-        allocation_fraction = (action * self.n_ambs) / np.sum(action)
-        #print(allocation_fraction)
-        allocation = np.round(allocation_fraction)
-        allocated = np.sum(allocation)
-        deficit_per_base = allocation_fraction - allocation
-        deficit = self.n_ambs - allocated
-        while deficit!=0:
-            increase = np.sign(deficit)
-            target_base = np.argmax(increase * deficit_per_base)
-            allocation[target_base] += increase
-            allocated += increase
-            deficit_per_base[target_base] -= increase
-            deficit -= increase
-        return allocation
         
     def step(self, action):
         #print(action)
-        target_allocation = self.get_target_allocation(action)
-        print(target_allocation)
-        self.obs, rewards, d, info = self.allocate(target_allocation, current_allocation=self.obs*self.n_ambs)
-        #print('Relocation took {0} steps'.format(len(rewards)))
-        while not d and len(rewards) < self.decision_interval:
-            self.obs, r, d, info = super().step(0)
+        action = (action + 1)/2
+        rewards = []
+        while len(rewards) < self.decision_interval:
+            self.obs, r, d, info = super().step(action)
             rewards.append(r)
-        if not d:
-            assert len(rewards) == self.decision_interval
-        else:
-            assert len(rewards) <= self.decision_interval
+            if d:
+                break
         return self.obs, np.sum(rewards), d, info
 
     def reset(self):
@@ -574,10 +510,10 @@ np.random.seed(0)
 # rat = RAT(env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, dup_q_update_interval=32, minibatch_size=32, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
 
 import gym_ERSLE
-env = ERSEnvWrapper(gym.make('pyERSEnv-v3'))
+env = ERSEnvWrapper(gym.make('pyERSEnv-ca-v3'))
 env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
 gym.logger.setLevel(logging.WARN)
-rat = RAT(env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=100, dup_q_update_interval=32, 
+rat = RAT(env, n_recommenders=6, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=100, dup_q_update_interval=32, 
         update_interval=1, minibatch_size=32, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-2, render=False)
 rat.epsilon_anneal = 500
 rat.epsilon_final = 0.2
