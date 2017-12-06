@@ -19,7 +19,7 @@ class Recommender:
                 h1 = fc(self.states_feed, 'fc1', nh=32, init_scale=np.sqrt(2))
                 h2 = fc(h1, 'fc2', nh=16, init_scale=np.sqrt(2))
                 h3 = fc(h2, 'fc3', nh=8, init_scale=np.sqrt(2))
-                self.recommendation = fc(h3, 'reco', nh=ac_shape[0], act=tf.nn.tanh)
+                self.recommendation = tf.nn.softmax(fc(h3, 'reco', nh=ac_shape[0], act=lambda x: x))
         self.scores = []
         self.age = 0
         self.session = session
@@ -245,7 +245,7 @@ class RAT:
                 elif rand < 1 - epsilon*epsilon:
                     random_action_index = np.random.randint(len(self.recommenders))
                     action = recos[random_action_index, i]
-                    noisy_action = np.clip(action + np.random.standard_normal(size=np.shape(action))/5, -1, 1)
+                    noisy_action = np.clip(action + np.random.standard_normal(size=np.shape(action))/10, 0, 1)
                     actions.append(noisy_action)
                     q.append(qs[random_action_index, i])
                     #print('Took noisy action')
@@ -455,8 +455,8 @@ class ERSEnvWrapper(gym.Wrapper):
         self.n_bases = 6
         
     def step(self, action):
-        #print(action)
-        action = (action + 1)/2
+        print(self.n_ambs * action)
+        #action = (action + 1)/2
         rewards = []
         while len(rewards) < self.decision_interval:
             self.obs, r, d, info = super().step(action)
@@ -514,12 +514,12 @@ env = ERSEnvWrapper(gym.make('pyERSEnv-ca-v3'))
 env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
 gym.logger.setLevel(logging.WARN)
 rat = RAT(env, n_recommenders=6, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=100, dup_q_update_interval=32, 
-        update_interval=1, minibatch_size=32, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-2, render=False)
+        update_interval=1, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-2, render=False)
 rat.epsilon_anneal = 500
 rat.epsilon_final = 0.2
 rat.use_beam_search = True
-rat.trainer_training_steps = 1
-rat.recommenders_training_steps = 1
+rat.trainer_training_steps = 10
+rat.recommenders_training_steps = 10
 rat.beam_selection_interval = 100
 rat.evaluation_envs_count = 8
 rat.learn()
