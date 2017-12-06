@@ -178,7 +178,7 @@ class Experience:
         self.next_state = next_state
 
 class RAT:
-    def __init__(self, env: gym.Env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):
+    def __init__(self, env: gym.Env, eval_env: gym.Env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):
         if n_recommenders <= 0:
             raise ValueError('There should be atleast one recommender')
         config = tf.ConfigProto(device_count = {'GPU': 0})
@@ -200,6 +200,7 @@ class RAT:
         self.seed = seed
         self.render = render
         self.env = env
+        self.eval_env = eval_env
         self.dup_q_update_interval = dup_q_update_interval
         self.experiences = [] # type: List[Experience]
         self.thinking_steps_before_acting = 0
@@ -331,13 +332,13 @@ class RAT:
             R = []
             for test_no in range(self.evaluation_envs_count):
                 seed = base_seed + test_no
-                self.env.seed(seed)
-                obs = self.env.reset()
+                self.eval_env.seed(seed)
+                obs = self.eval_env.reset()
                 ep_r = 0
                 d = False
                 while not d:
                     a = reco.get_recommendations([obs])[0]
-                    obs, r, d, _ = self.env.step(a)
+                    obs, r, d, _ = self.eval_env.step(a)
                     ep_r += r
                 #print(ep_r)
                 R.append(ep_r)
@@ -450,7 +451,7 @@ class ERSEnvWrapper(gym.Wrapper):
         super().__init__(env)
         self.env = env
         self.obs = None
-        self.decision_interval = 1440
+        self.decision_interval = 30
         self.n_ambs = 18
         self.n_bases = 6
         
@@ -511,15 +512,16 @@ np.random.seed(0)
 
 import gym_ERSLE
 env = ERSEnvWrapper(gym.make('pyERSEnv-ca-v3'))
+eval_env = ERSEnvWrapper(gym.make('pyERSEnv-ca-v3'))
 env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
 gym.logger.setLevel(logging.WARN)
-rat = RAT(env, n_recommenders=6, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=100, dup_q_update_interval=32, 
-        update_interval=1, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
-rat.epsilon_anneal = 500
+rat = RAT(env, eval_env, n_recommenders=6, seed=0, gamma=1, experience_buffer_length=50000, exploration_period=48*100, dup_q_update_interval=500, 
+        update_interval=4, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
+rat.epsilon_anneal = 48*500 # 100 episodes
 rat.epsilon_final = 0.2
 rat.use_beam_search = True
-rat.trainer_training_steps = 10
-rat.recommenders_training_steps = 5
+rat.trainer_training_steps = 2
+rat.recommenders_training_steps = 1
 rat.beam_selection_interval = 100
 rat.evaluation_envs_count = 8
 rat.learn()
