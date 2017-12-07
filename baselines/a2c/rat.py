@@ -16,9 +16,9 @@ class Recommender:
         with tf.variable_scope('recommenders'):
             with tf.variable_scope(name):
                 self.states_feed = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ob_shape))
-                h1 = fc(self.states_feed, 'fc1', nh=32, init_scale=np.sqrt(2))
-                h2 = fc(h1, 'fc2', nh=16, init_scale=np.sqrt(2))
-                h3 = fc(h2, 'fc3', nh=8, init_scale=np.sqrt(2))
+                h1 = fc(self.states_feed, 'fc1', nh=48, init_scale=np.sqrt(2))
+                h2 = fc(h1, 'fc2', nh=24, init_scale=np.sqrt(2))
+                h3 = fc(h2, 'fc3', nh=12, init_scale=np.sqrt(2))
                 self.recommendation = fc(h3, 'reco', nh=ac_shape[0], act=tf.nn.sigmoid)
         self.scores = []
         self.age = 0
@@ -98,9 +98,9 @@ class ActorTrainer:
            
                     # this will work only if state is single dimensional as well:
                     inp = tf.concat((states, actions), axis=-1)
-                    h1 = fc(inp, 'fc1', nh=32, init_scale=np.sqrt(2))
-                    h2 = fc(h1, 'fc2', nh=16, init_scale=np.sqrt(2))
-                    h3 = fc(h2, 'fc3', nh=8, init_scale=np.sqrt(2))
+                    h1 = fc(inp, 'fc1', nh=64, init_scale=np.sqrt(2))
+                    h2 = fc(h1, 'fc2', nh=32, init_scale=np.sqrt(2))
+                    h3 = fc(h2, 'fc3', nh=16, init_scale=np.sqrt(2))
                     if scope == 'q_duplicate':
                         self.q_duplicate = fc(h3, 'q', 1, act=lambda x: x)[:, 0]
                     else:
@@ -249,11 +249,11 @@ class RAT:
                     noisy_action = np.clip(action + np.random.standard_normal(size=np.shape(action))/10, 0, 1)
                     actions.append(noisy_action)
                     q.append(qs[random_action_index, i])
-                    #print('Took noisy action')
+                    print('Noisy action')
                 elif rand <= 1:
                     actions.append(self.env.action_space.sample())
                     q.append(0)
-                    #print('Took random action')
+                    print('Random action')
                 else:
                     raise RuntimeError('This should not happen. rand is {0}'.format(rand))
                 for j in range(len(self.recommenders)):
@@ -511,12 +511,12 @@ np.random.seed(0)
 # rat = RAT(env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, dup_q_update_interval=32, minibatch_size=32, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
 
 import gym_ERSLE
-env = ERSEnvWrapper(gym.make('pyERSEnv-ca-v3'))
-eval_env = ERSEnvWrapper(gym.make('pyERSEnv-ca-v3'))
+env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
+eval_env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
 env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
 gym.logger.setLevel(logging.WARN)
 rat = RAT(env, eval_env, n_recommenders=6, seed=0, gamma=1, experience_buffer_length=50000, exploration_period=48*100, dup_q_update_interval=500, 
-        update_interval=4, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
+        update_interval=4, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=5e-4, render=False)
 rat.epsilon_anneal = 48*500 # 100 episodes
 rat.epsilon_final = 0.2
 rat.use_beam_search = True
