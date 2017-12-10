@@ -11,35 +11,120 @@ from baselines import bench
 
 class Recommender:
 
-    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, ob_dtype='float32'):
+    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=True):
         assert len(ac_shape) == 1
-        with tf.variable_scope('recommenders'):
-            with tf.variable_scope(name):
-                self.states_feed = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ob_shape))
-                h1 = fc(self.states_feed, 'fc1', nh=48, init_scale=np.sqrt(2))
-                h2 = fc(h1, 'fc2', nh=24, init_scale=np.sqrt(2))
-                h3 = fc(h2, 'fc3', nh=12, init_scale=np.sqrt(2))
-                self.recommendation = fc(h3, 'reco', nh=ac_shape[0], act=tf.nn.sigmoid)
-        self.scores = []
-        self.age = 0
         self.session = session
         self.name = name
-        self.get_vars_op = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'recommenders/{0}'.format(name))
-        self.vars_feed_holder = []
-        self.set_vars_op = []
-        for v in self.get_vars_op:
-            v_feed = tf.placeholder(dtype='float32', shape=v.shape)
-            self.vars_feed_holder.append(v_feed)
-            self.set_vars_op.append(v.assign(v_feed))
+        self.ac_shape = ac_shape
+        with tf.variable_scope(name):
+            for scope in ['original', 'target']:
+                with tf.variable_scope(scope):
+                    with tf.variable_scope('s'):
+                        states_feed = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ob_shape))
+                        # conv layers go here
+                        states_flat = states_feed
+                        states_flat = tf.layers.batch_normalization(states_flat)
+                        s_h1 = fc(states_flat, 's_h1', nh=64, init_scale=np.sqrt(2))
+                        if use_layer_norm:
+                            s_h1 = tf.layers.batch_normalization(s_h1)
+                        s = s_h1
+                        if scope == 'target':
+                            self.states_feed_target = states_feed
+                        else:
+                            self.states_feed = states_feed
+                    with tf.variable_scope('a'):
+                        # one hidden layer after state representation for actions:
+                        a_h1 = fc(s, 'a_h1', nh=32, init_scale=np.sqrt(2))
+                        if use_layer_norm:
+                            a_h1 = tf.layers.batch_normalization(a_h1)
+                        a = fc(a_h1, 'a', nh=ac_shape[0], act=tf.nn.tanh, init_scale=1e-3)
+                        if scope == 'target':
+                            self.a_target = a
+                        else:
+                            self.use_actions_feed = tf.placeholder(dtype=tf.bool)
+                            self.actions_feed = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ac_shape))
+                            self.a = tf.case([
+                                (self.use_actions_feed, lambda: self.actions_feed)
+                            ], default=lambda: a)
+                            a = self.a
+                    with tf.variable_scope('q'):
+                        s_a_concat = tf.concat([s, a], axis=-1)
+                        # one hidden layer after concating s,a
+                        q_h1 = fc(s_a_concat, 'q_h1', nh=32, init_scale=np.sqrt(2))
+                        if use_layer_norm:
+                            q_h1 = tf.layers.batch_normalization(q_h1)
+                        q = fc(q_h1, 'q', 1, act=lambda x: x, init_scale=1e-3)[:, 0]
+                        if scope == 'target':
+                            self.q_target = q
+                        else:
+                            self.q = q
+            
+        # optimizers:
+        optimizer_q = tf.train.AdamOptimizer(learning_rate=q_lr)
+        optimizer_a = tf.train.AdamOptimizer(learning_rate=a_lr)
 
-    def get_recommendations(self, states):
-        return self.session.run(self.recommendation, feed_dict={self.states_feed: states})
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
-    def get_recommendations_tensor(self):
-        return self.recommendation
+        # for training actions:
+        self.a_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/a'.format(name))
+        self.av_q = tf.reduce_mean(self.q)
+        with tf.control_dependencies(update_ops):
+            self.train_a_op = optimizer_a.minimize(-self.av_q, var_list=self.a_vars)
 
-    def get_vars(self):
-        return self.session.run(self.get_vars_op)
+        # for training Q:
+        self.q_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/q'.format(name)) + \
+                        tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/s'.format(name))
+        self.q_target_feed = tf.placeholder(dtype='float32', shape=[None])
+        se = tf.square(self.q - self.q_target_feed)/2
+        self.mse = tf.reduce_mean(se)
+        
+        with tf.control_dependencies(update_ops):
+            self.train_q_op = optimizer_q.minimize(self.mse, var_list=self.q_vars)
+
+        # for updating target network:
+        from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/original'.format(name))
+        to_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/target'.format(name))
+        op_holder = []
+        for from_var,to_var in zip(from_vars,to_vars):
+            op_holder.append(to_var.assign(from_var))
+        self.update_target_network_op = op_holder
+
+    def get_actions_and_q(self, states):
+        return self.session.run([self.a, self.q], feed_dict={
+                        self.states_feed:states,
+                        self.use_actions_feed: False,
+                        self.actions_feed: [np.zeros(self.ac_shape)]
+                        })
+    
+    def get_q(self, states, actions):
+        return self.session.run([self.q], feed_dict={
+                        self.states_feed:states,
+                        self.use_actions_feed: True,
+                        self.actions_feed: actions
+                        })
+
+    def train_q(self, states, target_q, actions=None):
+        if actions is None:
+            actions = [np.zeros(self.ac_shape)]
+        return self.session.run([self.train_q_op, self.mse], feed_dict={
+                        self.states_feed:states,
+                        self.use_actions_feed: (actions is not None),
+                        self.actions_feed: actions,
+                        self.q_target_feed: target_q
+                        })
+    
+    def train_a(self, states):
+        return self.session.run([self.train_a_op, self.av_q], feed_dict={
+                        self.states_feed:states,
+                        self.use_actions_feed: False,
+                        self.actions_feed: [np.zeros(self.ac_shape)]
+                        })
+
+    def get_target_actions_and_q(self, states):
+        return self.session.run([self.a_target, self.q_target], feed_dict={self.states_feed_target: states})
+
+    def update_target_network(self):
+        self.session.run(self.update_target_network_op)
 
     def set_vars(self, newvars):
         feed_dict = {}
@@ -57,22 +142,6 @@ class Recommender:
                 mutations_gate = np.random.random_sample(np.shape(v)) < mutation_probability
                 self_vars[i] = v + mutations_gate * mutations
         other.set_vars(self_vars)
-
-    def add_score(self, score):
-        self.scores.append(score)
-
-    def average_score(self):
-        return np.average(self.scores)
-
-    def increment_age(self, amt=1):
-        self.age += amt
-
-    def reset_scores(self):
-        self.scores.clear()
-    
-    def reset_age(self):
-        self.age = 0
-
 
 class ActorTrainer:
 
@@ -178,9 +247,7 @@ class Experience:
         self.next_state = next_state
 
 class RAT:
-    def __init__(self, env: gym.Env, eval_env: gym.Env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):
-        if n_recommenders <= 0:
-            raise ValueError('There should be atleast one recommender')
+    def __init__(self, envs: List[gym.Env], eval_env: gym.Env, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):        
         config = tf.ConfigProto(device_count = {'GPU': 0})
         sess = tf.Session(config=config)
 
@@ -188,7 +255,7 @@ class RAT:
         self.ac_shape = env.action_space.shape
         self.ob_dtype = ob_dtype
         self.learning_rate = learning_rate
-        self.n_recommenders = n_recommenders
+        self.n_recommenders = len(envs)
         self.experience_buffer_length = experience_buffer_length
         self.exploration_period = exploration_period
         self.update_interval = update_interval
@@ -470,63 +537,67 @@ class ERSEnvWrapper(gym.Wrapper):
         self.obs = super().reset()
         return self.obs
 
+np.random.seed(0)
+
+def test():
+    config = tf.ConfigProto(device_count = {'GPU': 0})
+    sess = tf.Session(config=config)
+    
+    a = Recommender(sess, 'r1', [5], [2], ob_dtype='float32', q_lr=1e-3, a_lr=1e-4)
+    sess.run(tf.global_variables_initializer())
+    
+    s = [[0.1,0.2,0.1,0.5,-0.1]]
+
+    print('initial a&q on s={0}'.format(s[0]))
+    print(a.get_actions_and_q(s))
+
+    print('\nTraining q...')
+    for i in range(500):
+        _, mse = a.train_q([s[0]]*9, actions=[[-1,-1],[1,1],[-1,1],[1,-1],[-0.5, 0],[0,-0.5],[0,0.5],[1,0],[0.5,0]], target_q=[0,0,0,0,0.5,0.5,0.5,0.5,1])
+        if i % 100 == 0:
+            print('mse: {0}'.format(mse))
+
+    print('After training q values:')
+    print(a.get_q([s[0]]*9, [[-1,-1],[1,1],[-1,1],[1,-1],[-0.5, 0],[0,-0.5],[0,0.5],[1,0],[0.5,0]]))
+
+    print('old a')
+    print(a.get_actions_and_q(s))
+    print('\nTraining a...')
+    for i in range(500):
+        a.train_a(s)
+    print('New a & q:')
+    print(a.get_actions_and_q(s))
+
+    print('confirming target network gives same values:')
+    a.update_target_network()
+    print(a.get_target_actions_and_q(s))
+
 
 if __name__ == '__main__':
-    # config = tf.ConfigProto(device_count = {'GPU': 0})
-    # sess = tf.Session(config=config)
-    
-    # r1 = Recommender(sess, 'rec1', [5], [2], ob_dtype='float32')
-    # r2 = Recommender(sess, 'rec2', [5], [2], ob_dtype='float32')
-    # at = ActorTrainer(sess, [r1, r2], [5], [2], ob_dtype='float32', learning_rate=1e-3)
-    # sess.run(tf.global_variables_initializer())
-    # at.update_duplicate_q()
+    test()
 
-    s = [[0.1,0.2,0.1,0.5,-0.1]]
-    #print(r1.get_recommendations(s))
-    #print(r2.get_recommendations(s))
-    # print('Original recommendations:')
-    # print(at.get_recommendations(s))
-
-    # r1.copy_to(r2, mutation_probability=0.05)
-
-    # print('\nTraining q...')
-    # for i in range(100):
-    #     at.train_q([s[0]]*9, [[0,0],[1,1],[0,1],[1,0],[0.5,0.25],[0.25,0.5],[0.5,0.75],[0.75,0.5],[0.5,0.5]], [0,0,0,0,0.5,0.5,0.5,0.5,1])
-
-    # print('After training q values:')
-    # print(at.get_q([s[0]]*9, [[0,0],[1,1],[0,1],[1,0],[0.5,0.25],[0.25,0.5],[0.5,0.75],[0.75,0.5],[0.5,0.5]]))
-
-    # at.update_duplicate_q()
-    # print('\nTraining recommenders...')
-    # for i in range(20):
-    #     at.train_recommenders(s)
-    # print('New recommendations:')
-    # print(at.get_recommendations(s))
-
-
-np.random.seed(0)
 
 # env = DiscreteToContinousWrapper(gym.make('CartPole-v1'))
 # env = CartPoleWrapper(gym.make('CartPole-v1'))
 # rat = RAT(env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, dup_q_update_interval=32, minibatch_size=32, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
 
-import gym_ERSLE
-env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
-eval_env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
-env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
-gym.logger.setLevel(logging.WARN)
-rat = RAT(env, eval_env, n_recommenders=6, seed=0, gamma=1, experience_buffer_length=50000, exploration_period=48*100, dup_q_update_interval=500, 
-        update_interval=4, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=5e-4, render=False)
-rat.epsilon_anneal = 48*500 # 100 episodes
-rat.epsilon_final = 0.2
-rat.use_beam_search = True
-rat.trainer_training_steps = 2
-rat.recommenders_training_steps = 1
-rat.beam_selection_interval = 100
-rat.evaluation_envs_count = 8
-rat.learn()
-plt.plot(rat.rewards)
-plt.show()
+# import gym_ERSLE
+# env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
+# eval_env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
+# env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
+# gym.logger.setLevel(logging.WARN)
+# rat = RAT(env, eval_env, n_recommenders=6, seed=0, gamma=1, experience_buffer_length=50000, exploration_period=48*100, dup_q_update_interval=500, 
+#         update_interval=4, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=5e-4, render=False)
+# rat.epsilon_anneal = 48*500 # 100 episodes
+# rat.epsilon_final = 0.2
+# rat.use_beam_search = True
+# rat.trainer_training_steps = 2
+# rat.recommenders_training_steps = 1
+# rat.beam_selection_interval = 100
+# rat.evaluation_envs_count = 8
+# rat.learn()
+# plt.plot(rat.rewards)
+# plt.show()
 
 #eval code:
 # alloc = [4,3,4,0,3,4]
