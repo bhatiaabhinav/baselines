@@ -631,7 +631,7 @@ def test_actor_on_env(sess, learning = False, actor=None):
     env = gym.make(env_id) # type: gym.Env
     for W in wrappers: env = W(env) # type: gym.Wrapper
     if actor is None:
-        actor = Actor(sess, 'r1', env.observation_space.shape, env.action_space.shape, ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=True, auto_update_target_network_interval=100)
+        actor = Actor(sess, 'r1', env.observation_space.shape, env.action_space.shape, ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, auto_update_target_network_interval=100)
         sess.run(tf.global_variables_initializer())
     actor.reset()
     if learning: experience_buffer = ExperienceBuffer()
@@ -683,15 +683,16 @@ if __name__ == '__main__':
     np.random.seed(seed)
     minibatch_size = 64
     gamma = 0.99
-    exploration_period = 10*100
-    epsilon_anneal = 40*400
-    epsilon_final = 0
+    exploration_period = 5000
+    epsilon_anneal = 10000
+    epsilon_final = 0.1
     learning_env_seed = seed
-    learning_episodes=500
+    learning_episodes=1000
     test_env_seed = 0
     test_episodes = 100
     #with tf.Session(config=config) as sess: test(sess)
     #test_envs()
+    use_layer_norm = True
     with tf.Session(config=config) as sess:
         print('Training actor. seed={0}. learning_env_seed={1}'.format(seed, learning_env_seed))
         actor = test_actor_on_env(sess, True)
