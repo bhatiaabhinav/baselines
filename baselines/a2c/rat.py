@@ -1,5 +1,6 @@
 from typing import List
 import numpy as np
+from scipy.stats import rankdata
 import tensorflow as tf
 from baselines.a2c.utils import fc
 import gym
@@ -108,6 +109,8 @@ class Actor:
 
         self.params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}'.format(name))
 
+        self.writer = tf.summary.FileWriter('summary/rat', self.session.graph)
+
     def get_actions_and_q(self, states):
         ops, feed = self.get_actions_and_q_op_and_feed_dict(states)
         return self.session.run(ops, feed_dict=feed)
@@ -174,6 +177,7 @@ class Actor:
         from baselines.a2c.utils import make_path
         make_path(os.path.dirname(save_path))
         joblib.dump(ps, save_path)
+        self.writer.flush()
 
     def load(self, load_path):
         loaded_params = joblib.load(load_path)
@@ -428,7 +432,7 @@ def test(sess):
     a.save('models/test1/{0}'.format(a.name))
 
 def test2(sess):
-    a = Actor(sess, 'actor', [5], [2], ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
+    a = Actor(sess, 'actor', [5], [1], ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
     sess.run(tf.global_variables_initializer())
     a.update_target_networks()
     s = [[0.1,0.2,0.1,0.5,-0.1]]
@@ -436,14 +440,15 @@ def test2(sess):
     print('initial a&q on s={0}'.format(s[0]))
     print(a.get_actions_and_q(s))
 
+    actions = [[0],[0.5],[1]]
     print('\nTraining q...')
-    for i in range(500):
-        _, mse = a.train_q([s[0]]*3, actions=[[0, 1],[1,0],[0.4,0.6]], target_q=[0.9,0.8,1])
+    for i in range(2000):
+        _, mse = a.train_q([s[0]]*3, actions=actions, target_q=[9,10,8])
         if i % 100 == 0:
             print('mse: {0}'.format(mse))
 
     print('After training q values:')
-    print(a.get_q([s[0]]*3,[[0, 1],[1,0],[0.4,0.6]]))
+    print(a.get_q([s[0]]*3, actions))
 
     print('old a')
     print(a.get_actions_and_q(s))
@@ -542,6 +547,7 @@ def test_actor_on_env(sess, learning = False, actor=None):
             obs_, r, d, _ = env.step(a)
             if learning: experience_buffer.add(Experience(obs, a, r, d, _, obs_))
             obs, R, f, l = obs_, R+r, f+1, l+1
+        if 'ERS' in env_id: R = 200 * R
         Rs.append(R)
         av = np.average(Rs[-10:])
         print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, l, av))
@@ -549,6 +555,68 @@ def test_actor_on_env(sess, learning = False, actor=None):
     env.close()
     print('Average reward per episode: {0}'.format(np.average(Rs)))
     return actor
+
+selected_actor_percentage = {}
+
+def most_confident_act(actors : List[Actor], obs):
+    a_q_pairs = [actor.get_actions_and_q([obs]) for actor in actors]
+    qs = [x[1][0] for x in a_q_pairs]
+    selected = np.argmax(qs)
+    selected_actor_percentage[selected] += 1
+    print('Selected actor\'s index: {0}'.format(selected))
+    return max(a_q_pairs, key=lambda x:x[1][0])[0][0]
+
+def average_act(actors: List[Actor], obs):
+    a = [actor.get_actions_and_q([obs])[0][0] for actor in actors]
+    return np.average(np.asarray(a), axis=0)
+
+def max_average_q(actors: List[Actor], obs):
+    all_a = [actor.get_actions_and_q([obs])[0][0] for actor in actors]
+    all_q = np.zeros(shape=[len(actors)])
+    for actor in actors:
+        all_qs_acc_to_this_actor = actor.get_q(states=[obs]*len(actors), actions=all_a)[0]
+        all_q += all_qs_acc_to_this_actor
+    selected = np.argmax(all_q)
+    selected_actor_percentage[selected] += 1
+    print('Selected actor\'s index: {0}'.format(selected))
+    return all_a[selected]
+
+def max_borda_count(actors: List[Actor], obs, average_as_candidate=True):
+    all_a = [actor.get_actions_and_q([obs])[0][0] for actor in actors]
+    if average_as_candidate: all_a.append(np.average(np.asarray(all_a), axis=0))
+    all_a_borda_count = np.zeros(shape=[len(all_a)])
+    for actor in actors:
+        all_qs_acc_to_this_actor = actor.get_q(states=[obs]*len(all_a), actions=all_a)[0]
+        all_a_bc_acc_to_this_actor =  rankdata(all_qs_acc_to_this_actor)
+        all_a_borda_count += all_a_bc_acc_to_this_actor
+    selected = np.argmax(all_a_borda_count)
+    selected_actor_percentage[selected] += 1
+    print('Selected actor\'s index: {0}'.format(selected))
+    return all_a[selected]
+
+def ensembled_test_on_env(sess, model_paths):
+    np.random.seed(seed)
+    env = gym.make(env_id) # type: gym.Env
+    for W in wrappers: env = W(env) # type: gym.Wrapper
+    actors = [Actor(sess, 'actor{0}'.format(i), env.observation_space.shape, env.action_space.shape, ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau) for i in range(len(model_paths))]
+    sess.run(tf.global_variables_initializer())
+    for actor, path in zip(actors, model_paths):
+        actor.load(path)
+    print('Models Loaded')
+    Rs, f = [], 0
+    env.seed(test_env_seed)
+    for ep in range(test_episodes):
+        obs, d, R, l = env.reset(), False, 0, 0
+        while not d:
+            a = ensembled_act(actors, obs)
+            obs_, r, d, _ = env.step(a)
+            obs, R, f, l = obs_, R+r, f+1, l+1
+        if 'ERS' in env_id: R = 200 * R
+        Rs.append(R)
+        av = np.average(Rs[-10:])
+        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, l, av))
+    env.close()
+    print('Average reward per episode: {0}'.format(np.average(Rs)))
 
 if __name__ == '__main__':
     config = tf.ConfigProto(device_count = {'GPU': 0})
@@ -569,8 +637,9 @@ if __name__ == '__main__':
     learning_episodes=1000
     test_env_seed = 0
     test_episodes = 100
-    use_layer_norm = True
+    use_layer_norm = False
     nn_size = [400, 300]
+    ensembled_act = max_borda_count
     #with tf.Session(config=config) as sess: test(sess)
     #test_envs()
     with tf.Session(config=config) as sess:
@@ -581,43 +650,10 @@ if __name__ == '__main__':
         test_actor_on_env(sess, False, actor=actor)
         print('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(seed, learning_env_seed, test_env_seed))
         print('-------------------------------------------------\n')
-
-# env = DiscreteToContinousWrapper(gym.make('CartPole-v1'))
-# env = CartPoleWrapper(gym.make('CartPole-v1'))
-# rat = RAT(env, n_recommenders=4, seed=0, gamma=0.99, experience_buffer_length=10000, dup_q_update_interval=32, minibatch_size=32, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False)
-
-# 
-# env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
-# eval_env = ERSEnvWrapper(gym.make('pyERSEnv-ca-dynamic-v3'))
-# env = bench.Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), "{}.monitor.json".format(0)), allow_early_resets = True, log_frames=False)
-# gym.logger.setLevel(logging.WARN)
-# rat = RAT(env, eval_env, n_recommenders=6, seed=0, gamma=1, experience_buffer_length=50000, exploration_period=48*100, dup_q_update_interval=500, 
-#         update_interval=4, minibatch_size=64, pretrain_trainer=True, pretraining_steps=500, timesteps=1e7, ob_dtype='float32', learning_rate=5e-4, render=False)
-# rat.epsilon_anneal = 48*500 # 100 episodes
-# rat.epsilon_final = 0.2
-# rat.use_beam_search = True
-# rat.trainer_training_steps = 2
-# rat.recommenders_training_steps = 1
-# rat.beam_selection_interval = 100
-# rat.evaluation_envs_count = 8
-# rat.learn()
-# plt.plot(rat.rewards)
-# plt.show()
-
-#eval code:
-# alloc = [4,3,4,0,3,4]
-# a = 2*np.array(alloc)/18 - 1
-# env.seed(0)
-# env.reset()
-# R = []
-# ep_r = 0
-# while len(R) < 100:
-#     obs, r, d, _ = env.step(a)
-#     ep_r += r
-#     if d:
-#         print(ep_r)
-#         R.append(ep_r)
-#         ep_r = 0
-#         obs = env.reset()
-
-# print('Av score: {0}'.format(np.average(R)))
+    # with tf.Session(config=config) as sess:
+    #     selected_actor_percentage = {i:0 for i in range(9)}
+    #     ensembled_test_on_env(sess, ['models/{0}/{1}/model_actor'.format(env_id, i) for i in range(8)])
+    #     print('Actor\'s selection percentages:')
+    #     s = sum(selected_actor_percentage.values())
+    #     p = {k: round(v*100/s, ndigits=2) for k, v in selected_actor_percentage.items()}
+    #     print(p)
