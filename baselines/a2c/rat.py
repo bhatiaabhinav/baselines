@@ -2,7 +2,7 @@ from typing import List
 import numpy as np
 from scipy.stats import rankdata
 import tensorflow as tf
-from baselines.a2c.utils import fc
+from baselines.a2c.utils import fc, conv, conv_to_fc
 import gym
 import gym_ERSLE
 import matplotlib.pyplot as plt
@@ -13,6 +13,7 @@ import logging
 from baselines import bench
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 import sys
+from baselines.common.atari_wrappers import *
 
 class Actor:
 
@@ -32,7 +33,13 @@ class Actor:
                         self.states_feed = states_feed
                     with tf.variable_scope('a'):
                         # conv layers go here
-                        states_flat = states_feed
+                        if len(ob_shape) > 1:
+                            a_c1 = conv(tf.cast(states_feed, tf.float32)/255., 'a_c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
+                            a_c2 = conv(a_c1, 'a_c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
+                            a_c3 = conv(a_c2, 'a_c3', nf=64, rf=3, stride=1, init_scale=np.sqrt(2))
+                            states_flat = conv_to_fc(a_c3)
+                        else:
+                            states_flat = states_feed
                         a_h1 = fc(states_flat, 'a_h1', nh=nn_size[0], act=lambda x:x)
                         if use_layer_norm: a_h1 = tf.layers.batch_normalization(a_h1)
                         a_h1 = tf.nn.relu(a_h1)
@@ -40,11 +47,11 @@ class Actor:
                         if use_layer_norm: a_h2 = tf.layers.batch_normalization(a_h2)
                         a_h2 = tf.nn.relu(a_h2)
                         if 'ERS' in env_id:
-                            a = fc(a_h2, 'a', nh=ac_shape[0], act=lambda x:x, init_scale=1e-3)
+                            a = fc(a_h2, 'a', nh=ac_shape[0], act=lambda x:x, init_scale=init_scale)
                             exp = tf.exp(a - tf.reduce_max(a, axis=-1, keep_dims=True))
                             a = exp/tf.reduce_sum(exp, axis=-1, keep_dims=True)
                         else:
-                            a = fc(a_h2, 'a', nh=ac_shape[0], act=tf.nn.tanh, init_scale=1e-3)
+                            a = fc(a_h2, 'a', nh=ac_shape[0], act=tf.nn.tanh, init_scale=init_scale)
                         if scope == 'target':
                             self.a_target = a
                         else:
@@ -56,7 +63,13 @@ class Actor:
                             a = self.a
                     with tf.variable_scope('q'):
                         # conv layers go here
-                        states_flat = states_feed
+                        if len(ob_shape) > 1:
+                            a_c1 = conv(tf.cast(states_feed, tf.float32)/255., 'a_c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
+                            a_c2 = conv(a_c1, 'a_c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
+                            a_c3 = conv(a_c2, 'a_c3', nf=64, rf=3, stride=1, init_scale=np.sqrt(2))
+                            states_flat = conv_to_fc(a_c3)
+                        else:
+                            states_flat = states_feed
                         s_h1 = fc(states_flat, 's_h1', nh=nn_size[0], act=lambda x:x)
                         if use_layer_norm: s_h1 = tf.layers.batch_normalization(s_h1)
                         s_h1 = tf.nn.relu(s_h1)
@@ -64,7 +77,7 @@ class Actor:
                         s_a_concat = tf.concat([s, a], axis=-1)
                         # one hidden layer after concating s,a
                         q_h1 = fc(s_a_concat, 'q_h1', nh=nn_size[1])
-                        q = fc(q_h1, 'q', 1, act=lambda x: x, init_scale=1e-3)[:, 0]
+                        q = fc(q_h1, 'q', 1, act=lambda x: x, init_scale=init_scale)[:, 0]
                         if scope == 'target':
                             self.q_target = q
                         else:
@@ -202,105 +215,6 @@ class Actor:
                 mutations_gate = np.random.random_sample(np.shape(v)) < mutation_probability
                 self_vars[i] = v + mutations_gate * mutations
         other.set_vars(self_vars)
-
-
-# class EnsembledActors:
-#     def __init__(self, session: tf.Session, , n_actors, ob_shape, ac_shape, ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=True):
-#         self.actors = 
-
-
-# class ActorTrainer:
-
-#     def __init__(self, session: tf.Session, recommenders: List[Recommender], ob_shape, ac_shape, ob_dtype='float32', learning_rate=1e-3):
-#         # build the graph
-#         self.recommenders = recommenders
-#         self.session = session
-#         self.ac_shape = ac_shape
-#         self.ob_shape = ob_shape
-#         with tf.variable_scope('actor_trainer'):
-#             for scope in ['q', 'q_duplicate']:
-#                 with tf.variable_scope(scope):
-#                     if scope == 'q_duplicate':
-#                         self.states_feed_duplicate = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ob_shape))
-#                         self.recommenders_output = tf.concat([r.get_recommendations_tensor() for r in recommenders], axis=0)
-#                         states = tf.concat([self.states_feed_duplicate]*len(recommenders), axis=0)
-#                         actions = self.recommenders_output
-#                     else:
-#                         self.states_feed = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ob_shape))
-#                         self.actions_feed = tf.placeholder(dtype=ob_dtype, shape=[None] + list(ac_shape))
-#                         states = self.states_feed
-#                         actions = self.actions_feed
-           
-#                     # this will work only if state is single dimensional as well:
-#                     inp = tf.concat((states, actions), axis=-1)
-#                     h1 = fc(inp, 'fc1', nh=64, init_scale=np.sqrt(2))
-#                     h2 = fc(h1, 'fc2', nh=32, init_scale=np.sqrt(2))
-#                     h3 = fc(h2, 'fc3', nh=16, init_scale=np.sqrt(2))
-#                     if scope == 'q_duplicate':
-#                         self.q_duplicate = fc(h3, 'q', 1, act=lambda x: x)[:, 0]
-#                     else:
-#                         self.q = fc(h3, 'q', 1, act=lambda x: x)[:, 0]
-        
-#         optimizer_q = tf.train.AdamOptimizer(learning_rate=learning_rate)
-#         optimizer_recommenders = tf.train.AdamOptimizer(learning_rate=learning_rate)
-
-#         # for training the recommenders:
-#         recommenders_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='recommenders')
-#         self.av_q = tf.reduce_mean(self.q_duplicate)
-#         self.train_recommenders_op = optimizer_recommenders.minimize(-self.av_q, var_list=recommenders_vars)
-
-#         # for training the Q network:
-#         q_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='actor_trainer/q')
-#         self.target_q_feed = tf.placeholder(dtype='float32', shape=[None])
-#         #clipped_diff = tf.clip_by_value(self.q - self.target_q_feed, -1, 1)
-#         se = tf.square(self.q - self.target_q_feed)/2
-#         self.mse = tf.reduce_mean(se)
-#         self.train_q_op = optimizer_q.minimize(self.mse, var_list=q_vars)
-
-#         # for updating duplicate q:
-#         from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'actor_trainer/q')
-#         to_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'actor_trainer/q_duplicate')
-#         op_holder = []
-#         for from_var,to_var in zip(from_vars,to_vars):
-#             op_holder.append(to_var.assign(from_var))
-#         self.update_duplicate_q_op = op_holder
-
-#     def _get_feed_dict(self, states, using_duplicate_q=True, actions=None):
-#         if using_duplicate_q:
-#             feed_dict = {
-#                 self.states_feed_duplicate: states,
-#             }
-#             for r in self.recommenders:
-#                 feed_dict[r.states_feed] = states
-#         else:
-#             feed_dict = {
-#                 self.states_feed: states,
-#                 self.actions_feed: actions
-#             }
-#         return feed_dict
-
-#     def get_recommendations(self, states):
-#         feed_dict = self._get_feed_dict(states)
-#         actions, qs = self.session.run([self.recommenders_output, self.q_duplicate], feed_dict=feed_dict)
-#         actions = np.reshape(actions, newshape=[len(self.recommenders), len(states), -1])
-#         qs = np.reshape(qs, newshape=[len(self.recommenders), len(states)])
-#         return actions, qs
-
-#     def get_q(self, states, actions):
-#         feed_dict = self._get_feed_dict(states, False, actions)
-#         return self.session.run(self.q, feed_dict=feed_dict)
-
-#     def train_recommenders(self, states):
-#         feed_dict = self._get_feed_dict(states)
-#         return self.session.run([self.av_q, self.train_recommenders_op], feed_dict=feed_dict)
-        
-#     def train_q(self, states, actions, target_qs):
-#         feed_dict = self._get_feed_dict(states, False, actions)
-#         feed_dict[self.target_q_feed] = target_qs
-#         return self.session.run([self.mse, self.train_q_op], feed_dict=feed_dict)
-
-#     def update_duplicate_q(self):
-#         self.session.run(self.update_duplicate_q_op)
     
 
 class Experience:
@@ -509,7 +423,7 @@ def test_actor_on_env(sess, learning = False, actor=None):
         experience_buffer = ExperienceBuffer(length=replay_memory_length)
         noise = Noise_type(mu=np.zeros(env.action_space.shape), sigma=exploration_sigma)
     def train():
-        count = 1000 if f == exploration_period else 1
+        count = 500 if f == exploration_period else 1
         for c in range(count):
             mb = list(experience_buffer.random_experiences(count=minibatch_size)) # type: List[Experience]
             s, a, s_next, r, d = [e.state for e in mb], [e.action for e in mb], [e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
@@ -622,24 +536,63 @@ if __name__ == '__main__':
     config = tf.ConfigProto(device_count = {'GPU': 0})
     env_id = sys.argv[1] if len(sys.argv) > 1 else 'pyERSEnv-ca-30-v3'
     print('env_id: ' + env_id)
-    wrappers = [ERSEnvWrapper] if 'ERS' in env_id else [CartPoleWrapper]
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     print('Seed: {0}'.format(seed))
     np.random.seed(seed)
-    minibatch_size = 64
-    tau = 0.01
-    gamma = 0.99
-    exploration_period = 1000
-    replay_memory_length = 100000
-    exploration_sigma = 0.05 if 'ERS' in env_id else 0.2
-    Noise_type = OrnsteinUhlenbeckActionNoise
-    learning_env_seed = seed
-    learning_episodes=1000
-    test_env_seed = 0
-    test_episodes = 100
-    use_layer_norm = False
-    nn_size = [400, 300]
-    ensembled_act = max_borda_count
+    if 'ERS' in env_id:
+        ob_dtype = 'float32'
+        wrappers = [ERSEnvWrapper]
+        minibatch_size = 64
+        tau = 0.01
+        gamma = 0.99
+        exploration_period = 1000
+        replay_memory_length = 100000
+        exploration_sigma = 0.05
+        Noise_type = OrnsteinUhlenbeckActionNoise
+        learning_env_seed = seed
+        learning_episodes= 1000
+        test_env_seed = 0
+        test_episodes = 100
+        use_layer_norm = False
+        nn_size = [400, 300]
+        init_scale = 1e-3
+        ensembled_act = max_borda_count
+    if 'Pole' in env_id:
+        ob_dtype = 'float32'
+        wrappers = [CartPoleWrapper]
+        minibatch_size = 64
+        tau = 0.01
+        gamma = 0.99
+        exploration_period = 1000
+        replay_memory_length = 100000
+        exploration_sigma = 0.2
+        Noise_type = OrnsteinUhlenbeckActionNoise
+        learning_env_seed = seed
+        learning_episodes=1000
+        test_env_seed = 0
+        test_episodes = 100
+        use_layer_norm = False
+        nn_size = [400, 300]
+        init_scale = 1e-3
+        ensembled_act = max_borda_count
+    if 'NoFrameskip' in env_id:
+        ob_dtype = 'uint8'
+        wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxAndSkipEnv, FireResetEnv, WarpFrame, ClipRewardEnv, FrameStack, BreakoutContinuousActionWrapper]
+        minibatch_size = 16
+        tau = 0.01
+        gamma = 0.99
+        exploration_period = 10000
+        replay_memory_length = 40000
+        exploration_sigma = 0.2
+        Noise_type = OrnsteinUhlenbeckActionNoise
+        learning_env_seed = seed
+        learning_episodes = 10000
+        test_env_seed = 0
+        test_episodes = 100
+        use_layer_norm = False
+        nn_size = [200, 200]
+        init_scale = 1e-4
+        ensembled_act = max_borda_count
     #with tf.Session(config=config) as sess: test(sess)
     #test_envs()
     with tf.Session(config=config) as sess:

@@ -112,6 +112,24 @@ class MaxAndSkipEnv(gym.Wrapper):
         self._obs_buffer.append(obs)
         return obs
 
+class SkipEnv(gym.Wrapper):
+    def __init__(self, env, skip=4):
+        """Return only every `skip`-th frame"""
+        gym.Wrapper.__init__(self, env)
+        self._skip       = skip
+
+    def _step(self, action):
+        """Repeat action, sum reward, and max over last observations."""
+        total_reward = 0.0
+        done = None
+        for _ in range(self._skip):
+            obs, reward, done, info = self.env.step(action)
+            total_reward += reward
+            if done:
+                break
+
+        return obs, total_reward, done, info
+
 class ClipRewardEnv(gym.RewardWrapper):
     def _reward(self, reward):
         """Bin reward to {+1, 0, -1} by its sign."""
@@ -131,7 +149,7 @@ class WarpFrame(gym.ObservationWrapper):
         return frame.reshape((self.res, self.res, 1))
 
 class FrameStack(gym.Wrapper):
-    def __init__(self, env, k):
+    def __init__(self, env, k=4):
         """Buffer observations and stack across channels (last axis)."""
         gym.Wrapper.__init__(self, env)
         self.k = k
@@ -154,6 +172,20 @@ class FrameStack(gym.Wrapper):
     def _observation(self):
         assert len(self.frames) == self.k
         return np.concatenate(self.frames, axis=2)
+
+class BreakoutContinuousActionWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = spaces.Box(-1, 1, shape=[1])
+
+    def _step(self, action):
+        if action < -1/3:
+            action = 3
+        elif action >= -1/3 and action <= 1/3:
+            action = 0
+        else:
+            action = 2
+        return self.env.step(action)
 
 def wrap_deepmind(env, episode_life=True, clip_rewards=True):
     """Configure environment for DeepMind-style Atari.
