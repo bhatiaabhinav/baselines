@@ -112,6 +112,26 @@ class MaxAndSkipEnv(gym.Wrapper):
         self._obs_buffer.append(obs)
         return obs
 
+class MaxEnv(gym.Wrapper):
+    def __init__(self, env, skip=4):
+        gym.Wrapper.__init__(self, env)
+        # most recent raw observations (for max pooling across time steps)
+        self._obs_buffer = deque(maxlen=2)
+
+    def _step(self, action):
+        """Repeat action, sum reward, and max over last observations."""
+        obs, reward, done, info = self.env.step(action)
+        self._obs_buffer.append(obs)
+        max_frame = np.max(np.stack(self._obs_buffer), axis=0)
+        return max_frame, reward, done, info
+
+    def _reset(self):
+        """Clear past frame buffer and init. to first obs. from inner env."""
+        self._obs_buffer.clear()
+        obs = self.env.reset()
+        self._obs_buffer.append(obs)
+        return obs
+
 class SkipEnv(gym.Wrapper):
     def __init__(self, env, skip=4):
         """Return only every `skip`-th frame"""
@@ -119,7 +139,6 @@ class SkipEnv(gym.Wrapper):
         self._skip       = skip
 
     def _step(self, action):
-        """Repeat action, sum reward, and max over last observations."""
         total_reward = 0.0
         done = None
         for _ in range(self._skip):
@@ -168,6 +187,37 @@ class FrameStack(gym.Wrapper):
         ob, reward, done, info = self.env.step(action)
         self.frames.append(ob)
         return self._observation(), reward, done, info
+
+    def _observation(self):
+        assert len(self.frames) == self.k
+        return np.concatenate(self.frames, axis=2)
+
+class SkipAndFrameStack(gym.Wrapper):
+    def __init__(self, env, skip=4, k=4):
+        """Equivalent to SkipEnv(FrameStack(env, k), skip) but more efficient"""
+        gym.Wrapper.__init__(self, env)
+        self.k = k
+        self._skip = skip
+        self.frames = deque([], maxlen=k)
+        shp = env.observation_space.shape
+        assert shp[2] == 1  # can only stack 1-channel frames
+        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], k))
+
+    def _reset(self):
+        """Clear buffer and re-fill by duplicating the first observation."""
+        ob = self.env.reset()
+        for _ in range(self.k): self.frames.append(ob)
+        return self._observation()
+
+    def _step(self, action):
+        total_reward = 0.0
+        done = None
+        for _ in range(self._skip):
+            ob, reward, done, info = self.env.step(action)
+            total_reward += reward
+            self.frames.append(ob)
+            if done: break
+        return self._observation(), total_reward, done, info
 
     def _observation(self):
         assert len(self.frames) == self.k

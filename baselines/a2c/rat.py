@@ -444,12 +444,15 @@ def test_actor_on_env(sess, learning = False, actor=None):
         if f < exploration_period:
             a = env.action_space.sample()
             if 'ERS' in env_id: a = normalize(a)
+            return a
         else:
             a,q = actor.get_actions_and_q([obs])
             a,q = a[0],q[0]
-            if 'ERS' in env_id: print('a=\t\t{0}\tq= {1}'.format(a,q))
+            #if 'ERS' in env_id:
+            #print('a=\t\t{0}\tq= {1}'.format(a,q))
         a += noise()
         a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
+        #print('a\'=\t\t{0}'.format(a))
         return a
     Rs, f = [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
@@ -459,6 +462,7 @@ def test_actor_on_env(sess, learning = False, actor=None):
             if learning and f >= exploration_period and f % 4 == 0: train()
             a = act(obs)
             obs_, r, d, _ = env.step(a)
+            if render: env.render()
             if learning: experience_buffer.add(Experience(obs, a, r, d, _, obs_))
             obs, R, f, l = obs_, R+r, f+1, l+1
         if 'ERS' in env_id: R = 200 * R
@@ -557,6 +561,7 @@ if __name__ == '__main__':
         nn_size = [400, 300]
         init_scale = 1e-3
         ensembled_act = max_borda_count
+        render = False
     if 'Pole' in env_id:
         ob_dtype = 'float32'
         wrappers = [CartPoleWrapper]
@@ -575,15 +580,16 @@ if __name__ == '__main__':
         nn_size = [400, 300]
         init_scale = 1e-3
         ensembled_act = max_borda_count
+        render = False
     if 'NoFrameskip' in env_id:
         ob_dtype = 'uint8'
-        wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxAndSkipEnv, FireResetEnv, WarpFrame, ClipRewardEnv, FrameStack, BreakoutContinuousActionWrapper]
+        wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame, SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
         minibatch_size = 16
-        tau = 0.01
+        tau = 0.001
         gamma = 0.99
-        exploration_period = 10000
+        exploration_period = 1000
         replay_memory_length = 40000
-        exploration_sigma = 0.2
+        exploration_sigma = 0.6
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
         learning_episodes = 10000
@@ -593,6 +599,7 @@ if __name__ == '__main__':
         nn_size = [200, 200]
         init_scale = 1e-4
         ensembled_act = max_borda_count
+        render = False
     #with tf.Session(config=config) as sess: test(sess)
     #test_envs()
     with tf.Session(config=config) as sess:
