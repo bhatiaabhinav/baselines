@@ -448,11 +448,10 @@ def test_actor_on_env(sess, learning = False, actor=None):
         else:
             a,q = actor.get_actions_and_q([obs])
             a,q = a[0],q[0]
-            #if 'ERS' in env_id:
+            #if 'ERS' in env_id: 
             #print('a=\t\t{0}\tq= {1}'.format(a,q))
         a += noise()
         a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
-        #print('a\'=\t\t{0}'.format(a))
         return a
     Rs, f = [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
@@ -543,7 +542,7 @@ if __name__ == '__main__':
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     print('Seed: {0}'.format(seed))
     np.random.seed(seed)
-    if 'ERS' in env_id:
+    if 'ERSEnv-ca' in env_id:
         ob_dtype = 'float32'
         wrappers = [ERSEnvWrapper]
         minibatch_size = 64
@@ -562,7 +561,26 @@ if __name__ == '__main__':
         init_scale = 1e-3
         ensembled_act = max_borda_count
         render = False
-    if 'Pole' in env_id:
+    elif 'ERSEnv-im' in env_id:
+        ob_dtype = 'uint8'
+        wrappers = [WarpFrame, SkipAndFrameStack, ERSEnvWrapper]
+        minibatch_size = 32
+        tau = 0.005
+        gamma = 0.99
+        exploration_period = 1000
+        replay_memory_length = 40000
+        exploration_sigma = 0.05
+        Noise_type = OrnsteinUhlenbeckActionNoise
+        learning_env_seed = seed
+        learning_episodes= 5000
+        test_env_seed = 0
+        test_episodes = 100
+        use_layer_norm = False
+        nn_size = [200, 200]
+        init_scale = 1e-4
+        ensembled_act = max_borda_count
+        render = True
+    elif 'Pole' in env_id:
         ob_dtype = 'float32'
         wrappers = [CartPoleWrapper]
         minibatch_size = 64
@@ -581,7 +599,7 @@ if __name__ == '__main__':
         init_scale = 1e-3
         ensembled_act = max_borda_count
         render = False
-    if 'NoFrameskip' in env_id:
+    elif 'NoFrameskip' in env_id:
         ob_dtype = 'uint8'
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame, SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
         minibatch_size = 16
