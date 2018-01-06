@@ -451,7 +451,7 @@ def normalize(a):
     return a
 
 
-def test_actor_on_env(sess, learning=False, actor=None):
+def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_path=None):
     np.random.seed(seed)
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
@@ -461,6 +461,12 @@ def test_actor_on_env(sess, learning=False, actor=None):
                       ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
         sess.run(tf.global_variables_initializer())
     actor.update_target_networks()
+    if load_path:
+        try:
+            actor.load(load_path)
+            print('model loaded')
+        except Exception as ex:
+            print('Failed to load model. Reason = {0}'.format(ex))
     if learning:
         experience_buffer = ExperienceBuffer(length=replay_memory_length)
         noise = Noise_type(mu=np.zeros(env.action_space.shape), sigma=exploration_sigma)
@@ -497,14 +503,14 @@ def test_actor_on_env(sess, learning=False, actor=None):
             a, q = actor.get_actions_and_q([obs])
             a, q = a[0], q[0]
             # if 'ERS' in env_id:
-            #print('a=\t\t{0}\tq= {1}'.format(a,q))
+            # print('a=\t\t{0}\tq= {1}'.format(a,q))
         a += noise()
         a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
         return a
     Rs, f = [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
     for ep in range(learning_episodes if learning else test_episodes):
-        obs, d, R, l = env.reset(), False, 0, 0
+        obs, d, R, ep_l = env.reset(), False, 0, 0
         while not d:
             if learning and f >= exploration_period and f % 4 == 0:
                 train()
@@ -514,12 +520,14 @@ def test_actor_on_env(sess, learning=False, actor=None):
                 env.render()
             if learning:
                 experience_buffer.add(Experience(obs, a, r, d, _, obs_))
-            obs, R, f, l = obs_, R + r, f + 1, l + 1
+            obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
         if 'ERS' in env_id:
             R = 200 * R
         Rs.append(R)
         av = np.average(Rs[-10:])
-        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, l, av))
+        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, ep_l, av))
+        if save_path and ep % 50 == 0:
+            actor.save(save_path)
         if learning and env_id == 'CartPole-v1' and av > 490:
             break
     env.close()
@@ -585,16 +593,16 @@ def ensembled_test_on_env(sess, model_paths):
     Rs, f = [], 0
     env.seed(test_env_seed)
     for ep in range(test_episodes):
-        obs, d, R, l = env.reset(), False, 0, 0
+        obs, d, R, ep_l = env.reset(), False, 0, 0
         while not d:
             a = ensembled_act(actors, obs)
             obs_, r, d, _ = env.step(a)
-            obs, R, f, l = obs_, R + r, f + 1, l + 1
+            obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
         if 'ERS' in env_id:
             R = 200 * R
         Rs.append(R)
         av = np.average(Rs[-10:])
-        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, l, av))
+        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, ep_l, av))
     env.close()
     print('Average reward per episode: {0}'.format(np.average(Rs)))
 
@@ -640,6 +648,8 @@ if __name__ == '__main__':
         init_scale = 1e-3
         ensembled_act = max_borda_count
         render = False
+        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
+        load_path = save_path
     elif 'ERSEnv-im' in env_id:
         ob_dtype = 'uint8'
         wrappers = [FrameStack, ERSEnvWrapper]
@@ -660,6 +670,8 @@ if __name__ == '__main__':
         init_scale = 1e-4
         ensembled_act = max_borda_count
         render = False
+        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
+        load_path = save_path
     elif 'Pole' in env_id:
         ob_dtype = 'float32'
         wrappers = [CartPoleWrapper]
@@ -680,6 +692,8 @@ if __name__ == '__main__':
         init_scale = 1e-3
         ensembled_act = max_borda_count
         render = False
+        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
+        load_path = save_path
     elif 'NoFrameskip' in env_id:
         ob_dtype = 'uint8'
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame,
@@ -701,12 +715,14 @@ if __name__ == '__main__':
         init_scale = 1e-4
         ensembled_act = max_borda_count
         render = False
-    #with tf.Session(config=config) as sess: test(sess)
+        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
+        load_path = save_path
+    # with tf.Session(config=config) as sess: test(sess)
     # test_envs()
     with tf.Session(config=config) as sess:
         print('Training actor. seed={0}. learning_env_seed={1}'.format(seed, learning_env_seed))
-        actor = test_actor_on_env(sess, True)
-        actor.save('models/{0}/{1}/model_{2}'.format(env_id, seed, actor.name))
+        actor = test_actor_on_env(sess, True, save_path=save_path, load_path=load_path)
+        actor.save(save_path)
         print('Testing actor. test_env_seed={0}'.format(test_env_seed))
         test_actor_on_env(sess, False, actor=actor)
         print('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
