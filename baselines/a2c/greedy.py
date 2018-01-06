@@ -117,8 +117,8 @@ def optimize(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_time
             f.write(json.dumps({'policy':str(policy), 'env_id':env.id, 'nenvs':nenvs, 'seed':seed, 'ac_space':str(ac_space), 'ob_space':str(ob_space), 'ob_type':ob_dtype, 'nsteps':nsteps, 'nstack':nstack, 'total_timesteps':total_timesteps, 'frameskip':frameskip, 'vf_coef':vf_coef, 'ent_coef':ent_coef,
                                 'max_grad_norm':max_grad_norm, 'lr':lr, 'lrschedule':lrschedule, 'epsilon':epsilon, 'alpha':alpha, 'gamma':gamma, 'lambda':_lambda, 'log_interval':log_interval, 'saved_model_path':saved_model_path, 'render':render, 'no_training':no_training, 'abstime': time.time()}))
 
-    num_ambs = 18
-    num_bases = 6
+    num_ambs = 24
+    num_bases = 12
     print('Num ambs: {0}\tNum bases: {1}\n'.format(num_ambs, num_bases))
     
     reward_so_far = 0
