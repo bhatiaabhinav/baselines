@@ -76,12 +76,12 @@ class Actor:
                         if len(ob_shape) > 1:
                             inp = tf.cast(states_feed, tf.float32) / 255.
                             if ob_shape[0] >= 60:
-                                a_c1 = conv(inp, 'a_c1',
+                                s_c1 = conv(inp, 's_c1',
                                             nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
-                            a_c2 = conv(a_c1 if ob_shape[0] >= 60 else inp, 'a_c2',
+                            s_c2 = conv(s_c1 if ob_shape[0] >= 60 else inp, 's_c2',
                                         nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
-                            a_c3 = conv(a_c2, 'a_c3', nf=64, rf=3, stride=1, init_scale=np.sqrt(2))
-                            states_flat = conv_to_fc(a_c3)
+                            s_c3 = conv(s_c2, 's_c3', nf=64, rf=3, stride=1, init_scale=np.sqrt(2))
+                            states_flat = conv_to_fc(s_c3)
                         else:
                             states_flat = states_feed
                         s_h1 = fc(states_flat, 's_h1', nh=nn_size[0], act=lambda x: x)
@@ -90,11 +90,10 @@ class Actor:
                         s_h1 = tf.nn.relu(s_h1)
                         s = s_h1
                         s_a_concat = tf.concat([s, a], axis=-1)
-                        # one hidden layer after concating s,a
+                        # two hidden layers after concating s,a
                         q_h1 = fc(s_a_concat, 'q_h1', nh=nn_size[1])
-                        if len(ob_shape) > 1:
-                            q_h2 = fc(q_h1, 'q_h2', nh=nn_size[1])
-                        q = fc(q_h2 if len(ob_shape) > 1 else q_h1, 'q', 1,
+                        q_h2 = fc(q_h1, 'q_h2', nh=nn_size[1])
+                        q = fc(q_h2, 'q', 1,
                                act=lambda x: x, init_scale=init_scale)[:, 0]
                         if scope == 'target':
                             self.q_target = q
@@ -250,29 +249,40 @@ class Experience:
         self.info = info
         self.next_state = next_state
 
+    def __sizeof__(self):
+        return sys.getsizeof(self.state) + sys.getsizeof(self.action) + \
+            sys.getsizeof(self.reward) + sys.getsizeof(self.done) + \
+            sys.getsizeof(self.info) + sys.getsizeof(self.next_state)
+
 
 class ExperienceBuffer:
-    def __init__(self, length=1e6):
+    def __init__(self, length=1e6, size_in_bytes=None):
         self.buffer = []  # type: List[Experience]
         self.buffer_length = length
+        self.count = 0
+        self.size_in_bytes = size_in_bytes
 
     def __len__(self):
         return len(self.buffer)
 
     def add(self, exp: Experience):
-        self.buffer.append(exp)
-        if len(self.buffer) > self.buffer_length:
-            self.buffer.pop(0)
+        if self.count == 0:
+            if self.size_in_bytes is not None:
+                self.buffer_length = int(self.size_in_bytes / sys.getsizeof(exp))
+            print('Initializing experience buffer of length {0}'.format(self.buffer_length))
+            self.buffer = [None] * self.buffer_length
+        self.buffer[self.count % self.buffer_length] = exp
+        self.count = min(self.count + 1, self.buffer_length - 1)
 
     def random_experiences(self, count):
-        indices = np.random.randint(0, len(self.buffer), size=count)
+        indices = np.random.randint(0, self.count, size=count)
         for i in indices:
             yield self.buffer[i]
 
-# Based on http://math.stackexchange.com/questions/1287634/implementing-ornstein-uhlenbeck-in-matlab
-
 
 class OrnsteinUhlenbeckActionNoise:
+    '''Based on http://math.stackexchange.com/questions/1287634/implementing-ornstein-uhlenbeck-in-matlab'''
+
     def __init__(self, mu, sigma=0.2, theta=.15, dt=1e-2, x0=None):
         self.theta = theta
         self.mu = mu
@@ -468,7 +478,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         except Exception as ex:
             print('Failed to load model. Reason = {0}'.format(ex))
     if learning:
-        experience_buffer = ExperienceBuffer(length=replay_memory_length)
+        experience_buffer = ExperienceBuffer(size_in_bytes=replay_memory_size_in_bytes)
         noise = Noise_type(mu=np.zeros(env.action_space.shape), sigma=exploration_sigma)
 
     def train():
@@ -636,7 +646,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 2000
         pre_training_steps = 2000
-        replay_memory_length = 100000
+        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
         exploration_sigma = 0.02
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -653,12 +663,12 @@ if __name__ == '__main__':
     elif 'ERSEnv-im' in env_id:
         ob_dtype = 'uint8'
         wrappers = [FrameStack, ERSEnvWrapper]
-        minibatch_size = 32
-        tau = 0.005
+        minibatch_size = 64
+        tau = 0.01
         gamma = 0.99
         exploration_period = 100 * (1440 / 10)
         pre_training_steps = 1000
-        replay_memory_length = 40000
+        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
         exploration_sigma = 0.02
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -666,7 +676,7 @@ if __name__ == '__main__':
         test_env_seed = 42
         test_episodes = 100
         use_layer_norm = False
-        nn_size = [200, 200]
+        nn_size = [512, 512]
         init_scale = 1e-4
         ensembled_act = max_borda_count
         render = False
@@ -680,7 +690,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 1000
         pre_training_steps = 1000
-        replay_memory_length = 100000
+        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
         exploration_sigma = 0.2
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -703,7 +713,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 1000
         pre_training_steps = 500
-        replay_memory_length = 40000
+        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
         exploration_sigma = 0.6
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
