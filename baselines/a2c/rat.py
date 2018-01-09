@@ -5,7 +5,7 @@ import tensorflow as tf
 from baselines.a2c.utils import fc, conv, conv_to_fc
 import gym
 import gym_ERSLE
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from baselines import logger
 import os.path
 import os
@@ -534,10 +534,11 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         if 'ERS' in env_id:
             R = 200 * R
         Rs.append(R)
-        av = np.average(Rs[-10:])
+        av = np.average(Rs[-25:])
         print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, ep_l, av))
-        if save_path and ep % 50 == 0:
+        if save_path and ep % 50 == 0 and f == 0:
             actor.save(save_path)
+            print('model saved')
         if learning and env_id == 'CartPole-v1' and av > 490:
             break
     env.close()
@@ -611,7 +612,7 @@ def ensembled_test_on_env(sess, model_paths):
         if 'ERS' in env_id:
             R = 200 * R
         Rs.append(R)
-        av = np.average(Rs[-10:])
+        av = np.average(Rs[-25:])
         print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, ep_l, av))
     env.close()
     print('Average reward per episode: {0}'.format(np.average(Rs)))
