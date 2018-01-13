@@ -277,7 +277,8 @@ class ExperienceBuffer:
         self.count = min(self.count + 1, self.buffer_length)
 
     def random_experiences(self, count):
-        indices = np.random.randint(0, self.count, size=count)
+        indices = np.random.randint(0, self.count, size=count - 1)
+        yield self.buffer[(self.next_index - 1) % self.buffer_length]
         for i in indices:
             yield self.buffer[i]
 
