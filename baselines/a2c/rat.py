@@ -261,9 +261,10 @@ class ExperienceBuffer:
         self.buffer_length = length
         self.count = 0
         self.size_in_bytes = size_in_bytes
+        self.next_index = 0
 
     def __len__(self):
-        return len(self.buffer)
+        return self.count
 
     def add(self, exp: Experience):
         if self.count == 0:
@@ -271,8 +272,9 @@ class ExperienceBuffer:
                 self.buffer_length = int(self.size_in_bytes / sys.getsizeof(exp))
             print('Initializing experience buffer of length {0}'.format(self.buffer_length))
             self.buffer = [None] * self.buffer_length
-        self.buffer[self.count % self.buffer_length] = exp
-        self.count = min(self.count + 1, self.buffer_length - 1)
+        self.buffer[self.next_index] = exp
+        self.next_index = (self.next_index + 1) % self.buffer_length
+        self.count = min(self.count + 1, self.buffer_length)
 
     def random_experiences(self, count):
         indices = np.random.randint(0, self.count, size=count)
@@ -492,12 +494,6 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             _, mse = actor.train_q(s, r, a)
             actor.soft_update_target_networks()
         _, av_q = actor.train_a(s)
-        if f == exploration_period:
-            for c in range(count):
-                mb = list(experience_buffer.random_experiences(
-                    count=minibatch_size))  # type: List[Experience]
-                s = [e.state for e in mb]
-                _, av_q = actor.train_a(s)
         if f % 100 == 0:
             print('mse: {0}\tav_q:{1}'.format(mse, av_q))
 
@@ -536,7 +532,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         Rs.append(R)
         av = np.average(Rs[-25:])
         print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, ep_l, av))
-        if save_path and ep % 50 == 0 and f == 0:
+        if save_path and ep % 50 == 0:
             actor.save(save_path)
             print('model saved')
         if learning and env_id == 'CartPole-v1' and av > 490:
@@ -665,10 +661,10 @@ if __name__ == '__main__':
         ob_dtype = 'uint8'
         wrappers = [FrameStack, ERSEnvWrapper]
         minibatch_size = 64
-        tau = 0.01
+        tau = 0.005
         gamma = 0.99
         exploration_period = 100 * (1440 / 10)
-        pre_training_steps = 1000
+        pre_training_steps = 5000
         replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
         exploration_sigma = 0.02
         Noise_type = OrnsteinUhlenbeckActionNoise
@@ -676,7 +672,7 @@ if __name__ == '__main__':
         learning_episodes = 5000
         test_env_seed = 42
         test_episodes = 100
-        use_layer_norm = False
+        use_layer_norm = True
         nn_size = [512, 512]
         init_scale = 1e-4
         ensembled_act = max_borda_count
