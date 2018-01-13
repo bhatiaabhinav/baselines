@@ -498,7 +498,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             print('mse: {0}\tav_q:{1}'.format(mse, av_q))
 
     def act(obs):
-        if not learning:
+        if no_explore:
             return actor.get_actions_and_q([obs])[0][0]
         if f < exploration_period:
             a = env.action_space.sample()
@@ -513,10 +513,11 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         a += noise()
         a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
         return a
-    Rs, f = [], 0
+    Rs, no_explore_Rs, f = [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
     for ep in range(learning_episodes if learning else test_episodes):
         obs, d, R, ep_l = env.reset(), False, 0, 0
+        no_explore = (ep % 10 == 0) or not learning
         while not d:
             if learning and f >= exploration_period and f % 4 == 0:
                 train()
@@ -530,8 +531,12 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         if 'ERS' in env_id:
             R = 200 * R
         Rs.append(R)
-        av = np.average(Rs[-25:])
-        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(ep, R, ep_l, av))
+        if no_explore:
+            no_explore_Rs.append(R)
+        av = np.average(Rs[-100:])
+        no_explore_av = np.average(no_explore_Rs[-100:])
+        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}\tExploit_Av_R: {4}{5}'.format(
+            ep, R, ep_l, av, no_explore_av, "\t(exploited)" if no_explore else ""))
         if save_path and ep % 50 == 0:
             actor.save(save_path)
             print('model saved')
@@ -539,6 +544,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             break
     env.close()
     print('Average reward per episode: {0}'.format(np.average(Rs)))
+    print('Exploitation average reward per episode: {0}'.format(np.average(no_explore_Rs)))
     return actor
 
 
