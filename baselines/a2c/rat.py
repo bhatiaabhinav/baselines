@@ -523,7 +523,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         obs, d, R, ep_l = env.reset(), False, 0, 0
         if learning:
             noise.reset()
-        no_explore = (ep % 10 == 0) or not learning
+        no_explore = (ep % 2 == 0) or not learning
         while not d:
             if learning and f >= exploration_period and f % 4 == 0:
                 train()
