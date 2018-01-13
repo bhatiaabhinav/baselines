@@ -315,6 +315,9 @@ class NormalNoise:
     def __call__(self):
         return self.mu + self.sigma * np.random.standard_normal(size=self.mu.shape)
 
+    def reset(self):
+        pass
+
 
 class CartPoleWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -518,6 +521,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     env.seed(learning_env_seed if learning else test_env_seed)
     for ep in range(learning_episodes if learning else test_episodes):
         obs, d, R, ep_l = env.reset(), False, 0, 0
+        if learning:
+            noise.reset()
         no_explore = (ep % 10 == 0) or not learning
         while not d:
             if learning and f >= exploration_period and f % 4 == 0:
