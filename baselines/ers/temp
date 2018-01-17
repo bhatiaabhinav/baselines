@@ -1,0 +1,235 @@
+# class RAT:
+#     def __init__(self, envs: List[gym.Env], eval_env: gym.Env, seed=0, gamma=0.99, experience_buffer_length=10000, exploration_period=1000, dup_q_update_interval=500, update_interval=4, minibatch_size=32, pretrain_trainer=True, pretraining_steps=100, timesteps=1e7, ob_dtype='float32', learning_rate=1e-3, render=False):        
+#         config = tf.ConfigProto(device_count = {'GPU': 0})
+#         sess = tf.Session(config=config)
+
+#         self.ob_shape = env.observation_space.shape
+#         self.ac_shape = env.action_space.shape
+#         self.ob_dtype = ob_dtype
+#         self.learning_rate = learning_rate
+#         self.n_recommenders = len(envs)
+#         self.experience_buffer_length = experience_buffer_length
+#         self.exploration_period = exploration_period
+#         self.update_interval = update_interval
+#         self.minibatch_size = minibatch_size
+#         self.pretrain_trainer = pretrain_trainer
+#         self.pretraining_steps = pretraining_steps
+#         self.gamma = gamma
+#         self.timesteps = timesteps
+#         self.seed = seed
+#         self.render = render
+#         self.env = env
+#         self.eval_env = eval_env
+#         self.dup_q_update_interval = dup_q_update_interval
+#         self.experiences = [] # type: List[Experience]
+#         self.thinking_steps_before_acting = 0
+#         self.trainer_training_steps = 1
+#         self.recommenders_training_steps = 1
+#         self.use_beam_search = True
+#         self.beam_selection_interval = 1
+#         self.epsilon_final = 0.1
+#         self.epsilon_anneal = 2000
+#         self.update_count = 0
+#         self.evaluation_envs_count = 4
+
+#         self.recommenders = [Recommender(sess, 'r{0}'.format(i), self.ob_shape, self.ac_shape, self.ob_dtype) for i in range(n_recommenders)]
+#         self.actor_trainer = ActorTrainer(sess, self.recommenders, self.ob_shape, self.ac_shape, self.ob_dtype, self.learning_rate)
+#         sess.run(tf.global_variables_initializer())
+
+#         # for variation... let each recommender be mutation of another:
+#         for r, r_mut in zip(self.recommenders[:-1], self.recommenders[1:]):
+#             r.copy_to(r_mut, mutation_probability=0.5)
+        
+
+#     def _get_action(self, state, best_action=True, epsilon=0.1):
+#         a, q = self._get_actions([state], best_actions=best_action, epsilon=epsilon)
+#         return a[0], q[0]
+
+#     def _get_actions(self, states, best_actions=True, epsilon=0.1):
+#         recos, qs = self.actor_trainer.get_recommendations(states)
+#         actions = []
+#         q = []
+#         for i in range(len(states)):
+#             best_action_index = np.argmax(qs[:,i])
+#             best_action = recos[best_action_index, i]
+#             best_q = qs[best_action_index, i]
+#             if best_actions:
+#                 actions.append(best_action)
+#                 q.append(best_q)
+#             else:
+#                 #print('epsilon: {0}'.format(epsilon))
+#                 rand = np.random.rand()
+#                 if rand < 1 - epsilon:
+#                     actions.append(best_action)
+#                     q.append(best_q)
+#                 elif rand < 1 - epsilon*epsilon:
+#                     random_action_index = np.random.randint(len(self.recommenders))
+#                     action = recos[random_action_index, i]
+#                     noisy_action = np.clip(action + np.random.standard_normal(size=np.shape(action))/10, 0, 1)
+#                     actions.append(noisy_action)
+#                     q.append(qs[random_action_index, i])
+#                     print('Noisy action')
+#                 elif rand <= 1:
+#                     actions.append(self.env.action_space.sample())
+#                     q.append(0)
+#                     print('Random action')
+#                 else:
+#                     raise RuntimeError('This should not happen. rand is {0}'.format(rand))
+#                 for j in range(len(self.recommenders)):
+#                     self.recommenders[j].add_score(qs[j, i])
+            
+#         return actions, q
+    
+#     def _get_epsilon(self):
+#         if self.t < self.exploration_period:
+#             return 1
+#         if self.t >= (self.exploration_period + self.epsilon_anneal):
+#             return self.epsilon_final
+#         return 1 - (1 - self.epsilon_final) * (self.t - self.exploration_period)/(self.epsilon_anneal)
+
+
+
+#     def _should_train_trainer(self):
+#         ans = self.t > self.exploration_period and self.t % self.update_interval == 0
+#         return ans
+
+#     def _should_train_recommenders(self):
+#         ans = self.t > self.exploration_period and self.t % self.update_interval == 0
+#         return ans
+
+#     def _should_select_recommenders(self):
+#         ans = self.use_beam_search and self.episodes % self.beam_selection_interval == 0
+#         if ans and self.n_recommenders % 2 != 0:
+#             raise RuntimeError('To do selection, number of recommenders should be even')
+#         return ans
+
+#     def _should_update_duplicate_q(self):
+#         return self.update_count % self.dup_q_update_interval == 0
+
+#     def _think_before_acting(self, state):
+#         for step in range(self.thinking_steps_before_acting):
+#             self.actor_trainer.train_recommenders([state])
+
+#     def _train_trainer(self, steps):
+#         for step in range(steps):
+#             exps = list(self._random_experiences(self.minibatch_size)) # type: List[Experience]
+#             next_states = [e.next_state for e in exps]
+#             # pass best_actions=False to do on-policy learning
+#             next_acts, next_qs = self._get_actions(next_states, best_actions=True)
+#             target_qs = [0] * self.minibatch_size
+#             for i in range(self.minibatch_size):
+#                 target_qs[i] = exps[i].reward
+#                 if not exps[i].done:
+#                     target_qs[i] += self.gamma * next_qs[i]
+#             loss, _ = self.actor_trainer.train_q([e.state for e in exps], [e.action for e in exps], target_qs)
+#             #print('loss: {0}'.format(loss))
+#             self.update_count += 1
+#             if self._should_update_duplicate_q():
+#                 self.actor_trainer.update_duplicate_q()
+
+#     def _train_recommenders(self, steps):
+#         for step in range(steps):
+#             exps = self._random_experiences(self.minibatch_size)
+#             states = [e.state for e in exps]
+#             av_q, _ = self.actor_trainer.train_recommenders(states)
+#             #print('av_q: {0}'.format(av_q))
+
+#     def _eval_recommenders(self):
+#         base_seed = np.random.randint(0, 100)
+#         scores = []
+#         print('Evaluating recommenders on base_seed {0}'.format(base_seed))
+#         for reco in self.recommenders:
+#             #print('Reco #{0} :'.format(len(scores)))
+#             R = []
+#             for test_no in range(self.evaluation_envs_count):
+#                 seed = base_seed + test_no
+#                 self.eval_env.seed(seed)
+#                 obs = self.eval_env.reset()
+#                 ep_r = 0
+#                 d = False
+#                 while not d:
+#                     a = reco.get_recommendations([obs])[0]
+#                     obs, r, d, _ = self.eval_env.step(a)
+#                     ep_r += r
+#                 #print(ep_r)
+#                 R.append(ep_r)
+#             scores.append(np.average(R))
+#         print('Evalution scores: {0}'.format(scores))
+#         return np.array(scores)
+#         #return np.array([reco.average_score() for reco in self.recommenders])
+            
+
+#     def _select_recommenders(self):
+#         p = self._eval_recommenders()
+#         p -= np.min(p)
+#         if np.max(p) > 0:
+#             p /= (np.max(p)/4)
+#         else:
+#             p = np.array([1]*len(p))
+#         p = np.exp(p)
+#         p /= np.sum(p)
+#         selected = np.random.choice(len(p), p=p, size=len(p)//2, replace=False)
+#         notSelected = list(filter(lambda i: i not in selected, range(len(p))))
+#         mutation_probs = np.linspace(0.1, 0.5, num=len(selected))
+#         #print('Selected recommenders:')
+#         #print(selected)
+#         #print('To be replaced recommenders:')
+#         #print(list(notSelected))
+#         #print('Mutation probs:')
+#         #print(mutation_probs)
+#         for s, ns, mp in zip(selected, notSelected, mutation_probs):
+#             #print(mp)
+#             self.recommenders[s].copy_to(self.recommenders[ns], mutation_probability=mp)
+#             self.recommenders[ns].reset_age()
+#         # for r in self.recommenders:
+#         #     r.reset_scores()
+
+#     def learn(self):
+#         #for i in range(100):
+#         #    self.actor_trainer.train_q([np.random.rand(self.ob_shape[0]), np.random.rand(self.ob_shape[0])], [[-2],[2]], [-10,-10])
+
+#         self.env.seed(self.seed)
+#         self.t = 0
+#         self.episodes = 0
+#         self.rewards = []
+#         for r in self.recommenders:
+#             r.reset_scores()
+#         while self.t < self.timesteps:
+#             if self._should_select_recommenders():
+#                 self._select_recommenders()
+#             for r in self.recommenders:
+#                 r.reset_scores()
+#             obs = self.env.reset()
+#             if self.render: self.env.render()
+#             R = 0
+#             d = False
+#             while not d:
+#                 # general training
+#                 if self.pretrain_trainer and self.t == self.exploration_period:
+#                     print('Exploration phase ended. Pretraining trainer:')
+#                     self._train_trainer(self.pretraining_steps)
+#                 if self._should_train_trainer():
+#                     self._train_trainer(self.trainer_training_steps)
+#                 if self._should_train_recommenders():
+#                     self._train_recommenders(self.recommenders_training_steps)
+                
+#                 self._think_before_acting(obs)
+#                 a, q = self._get_action(obs, best_action=False, epsilon=self._get_epsilon())
+#                 next_obs, r, d, info = self.env.step(a)
+#                 self._add_to_experience(Experience(obs, a, r, d, info, next_obs))
+#                 obs = next_obs
+#                 R += r
+#                 if self.render: self.env.render()
+#                 self.t += 1
+            
+#             for r in self.recommenders:
+#                 r.increment_age()
+#             print('Scores of recommenders:')
+#             p = np.array([r.average_score() for r in self.recommenders])
+#             print(p)
+            
+#             self.episodes += 1
+#             self.rewards.append(R)
+#             print('episode {0}:\t{1}'.format(self.episodes,R))
+#             if sum(self.rewards[-5:]) > (400*5):
+#                 break
