@@ -236,6 +236,61 @@ class SkipAndFrameStack(gym.Wrapper):
         return np.concatenate(self.frames, axis=2)
 
 
+class ObsExpandWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        low = env.observation_space.low
+        high = env.observation_space.high
+        self.observation_space = gym.spaces.Box(low if np.isscalar(low) else np.asarray(low).item(0), high if np.isscalar(high) else np.asarray(high).item(0),
+                                                shape=(
+            env.observation_space.shape[0],
+            env.observation_space.shape[1] if len(
+                env.observation_space.shape) >= 2 else 1,
+            env.observation_space.shape[2] if len(
+                env.observation_space.shape) >= 3 else 1
+        ))
+
+    def reset(self):
+        ob = super().reset()
+        if ob.ndim == 1:
+            ob = ob[:, np.newaxis, np.newaxis]
+        elif ob.ndim == 2:
+            ob = ob[:, :, np.newaxis]
+        return ob
+
+    def step(self, action):
+        ob, r, d, _ = super().step(action)
+        if ob.ndim == 1:
+            ob = ob[:, np.newaxis, np.newaxis]
+        elif ob.ndim == 2:
+            ob = ob[:, :, np.newaxis]
+        return ob, r, d, _
+
+
+class NoopFrameskipWrapper(gym.Wrapper):
+    def __init__(self, env, gamma=0.99):
+        super().__init__(env)
+        self.FRAMESKIP_ON_NOOP = 2
+        self.gamma = gamma
+        self.noop_phase = False
+        self.skipped_already = 0
+
+    def _is_noop(self, action):
+        return action == 0
+
+    def step(self, action):
+        if self._is_noop(action):
+            R = 0
+            for i in range(self.FRAMESKIP_ON_NOOP):
+                ob, r, d, _ = super().step(action)
+                R += r
+                if d:
+                    break
+            return ob, R, d, _
+        else:
+            return super().step(action)
+
+
 class BreakoutContinuousActionWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)

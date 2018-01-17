@@ -5,12 +5,10 @@ import tensorflow as tf
 from baselines.a2c.utils import fc, conv, conv_to_fc
 import gym
 import gym_ERSLE
-#import matplotlib.pyplot as plt
 from baselines import logger
 import os.path
 import os
 import joblib
-import logging
 from baselines import bench
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 import sys
@@ -220,7 +218,7 @@ class Actor:
         restores = []
         for p, loaded_p in zip(self.params, loaded_params):
             restores.append(p.assign(loaded_p))
-        ps = self.session.run(restores)
+        self.session.run(restores)
 
     def set_vars(self, newvars):
         feed_dict = {}
@@ -629,24 +627,14 @@ def ensembled_test_on_env(sess, model_paths):
 
 
 if __name__ == '__main__':
-    config = tf.ConfigProto(device_count={'GPU': 0})
-    env_id = sys.argv[1] if len(sys.argv) > 1 else 'pyERSEnv-ca-30-v3'
+    # config = tf.ConfigProto(device_count={'GPU': 0})
+    from baselines.ers.args import parse
+    args = parse()
+    env_id = args.env
     print('env_id: ' + env_id)
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    seed = args.seed
     print('Seed: {0}'.format(seed))
     np.random.seed(seed)
-    arg_logdir = os.getenv('OPENAI_LOGDIR')
-    run_no_prefix = sys.argv[3] if len(sys.argv) > 3 else 'run'
-    if arg_logdir:
-        for run_no in range(int(1e6)):
-            logdir = os.path.join(arg_logdir, env_id, run_no_prefix + '_' + str(run_no).zfill(3))
-            if not os.path.isdir(logdir):
-                os.putenv('OPENAI_LOGDIR', logdir)
-                logger.reset()
-                logger.configure(logdir)
-                break
-            else:
-                run_no += 1
     if 'ERSEnv-ca' in env_id:
         ob_dtype = 'float32'
         wrappers = [ERSEnvWrapper]
@@ -655,7 +643,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 2000
         pre_training_steps = 2000
-        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
+        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
         exploration_sigma = 0.02
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -677,7 +665,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 100 * (1440 / 10)
         pre_training_steps = 1000
-        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
+        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
         exploration_sigma = 0.2
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -699,7 +687,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 1000
         pre_training_steps = 1000
-        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
+        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
         exploration_sigma = 0.2
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -722,7 +710,7 @@ if __name__ == '__main__':
         gamma = 0.99
         exploration_period = 1000
         pre_training_steps = 500
-        replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
+        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
         exploration_sigma = 0.6
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
@@ -736,9 +724,9 @@ if __name__ == '__main__':
         render = False
         save_path = 'models/{0}/{1}/model'.format(env_id, seed)
         load_path = save_path
-    # with tf.Session(config=config) as sess: test(sess)
+    # with tf.Session() as sess: test(sess)
     # test_envs()
-    with tf.Session(config=config) as sess:
+    with tf.Session() as sess:
         print('Training actor. seed={0}. learning_env_seed={1}'.format(seed, learning_env_seed))
         actor = test_actor_on_env(sess, True, save_path=save_path, load_path=load_path)
         actor.save(save_path)
@@ -747,7 +735,7 @@ if __name__ == '__main__':
         print('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
             seed, learning_env_seed, test_env_seed))
         print('-------------------------------------------------\n')
-    # with tf.Session(config=config) as sess:
+    # with tf.Session() as sess:
     #     selected_actor_percentage = {i:0 for i in range(9)}
     #     ensembled_test_on_env(sess, ['models/{0}/{1}/model_actor'.format(env_id, i) for i in range(8)])
     #     print('Actor\'s selection percentages:')
