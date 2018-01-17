@@ -91,23 +91,16 @@ def test_candidate(allocation_per_base_so_far, candidate_base, env, num_ambs, nu
     env.reset()
     av_reward = 0
 
-    # old code:
-    #av_reward += allocate_per_amb(env, allocation_per_amb_so_far, num_ambs, num_bases)
-    #action_id = num_bases * candidate_base + 0
-    #obs, r, dones, info = env.step(get_actions(env.num_envs, action_id))
-    #av_reward += np.average(r)
-
     # calculate target allocation and allocate
     target_allocation = allocation_per_base_so_far.copy()
     target_allocation[candidate_base] += 1
     # rest go to base 0
     target_allocation[0] += num_ambs - sum(target_allocation)
-    av_reward += allocate(env, target_allocation, num_ambs)
-
-    # now dont do anything
+    target_allocation = np.array(target_allocation) / np.sum(target_allocation)
+    av_reward = 0
     done = False
     while not done:
-        obs, r, dones, info = env.step(get_actions(env.num_envs, 0))
+        obs, r, dones, info = env.step(get_actions(env.num_envs, target_allocation))
         done = dones[0]
         av_reward += np.average(r)
     return av_reward
@@ -124,10 +117,8 @@ def optimize(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_time
             f.write(json.dumps({'policy':str(policy), 'env_id':env.id, 'nenvs':nenvs, 'seed':seed, 'ac_space':str(ac_space), 'ob_space':str(ob_space), 'ob_type':ob_dtype, 'nsteps':nsteps, 'nstack':nstack, 'total_timesteps':total_timesteps, 'frameskip':frameskip, 'vf_coef':vf_coef, 'ent_coef':ent_coef,
                                 'max_grad_norm':max_grad_norm, 'lr':lr, 'lrschedule':lrschedule, 'epsilon':epsilon, 'alpha':alpha, 'gamma':gamma, 'lambda':_lambda, 'log_interval':log_interval, 'saved_model_path':saved_model_path, 'render':render, 'no_training':no_training, 'abstime': time.time()}))
 
-    obs = env.reset()
-    obs, r, d, info = env.step(get_actions(nenvs, 0))
-    num_ambs = find_num_ambs(info[0])
-    num_bases = find_num_bases(info[0])
+    num_ambs = 24
+    num_bases = 12
     print('Num ambs: {0}\tNum bases: {1}\n'.format(num_ambs, num_bases))
     
     reward_so_far = 0
@@ -169,16 +160,16 @@ def optimize(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_time
     print('')
 
     
-    print('Now just playing ... :)')
-    print('Do not expect same scores because the envs will not be reseeded now on.\n')
-    while True:
-        av_reward = 0
-        av_reward += allocate(env, allocation_per_base_so_far, num_ambs)
-        done = False
-        while not done:
-            obs, r, dones, info = env.step(get_actions(env.num_envs, 0))
-            av_reward += np.average(r)
-            done = dones[0]
-        print('Score: {0}'.format(av_reward))
+    # print('Now just playing ... :)')
+    # print('Do not expect same scores because the envs will not be reseeded now on.\n')
+    # while True:
+    #     av_reward = 0
+    #     av_reward += allocate(env, allocation_per_base_so_far, num_ambs)
+    #     done = False
+    #     while not done:
+    #         obs, r, dones, info = env.step(get_actions(env.num_envs, 0))
+    #         av_reward += np.average(r)
+    #         done = dones[0]
+    #     print('Score: {0}'.format(av_reward))
 
     

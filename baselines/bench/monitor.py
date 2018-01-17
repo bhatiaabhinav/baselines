@@ -16,7 +16,7 @@ class Monitor(Wrapper):
     EXT = "monitor.json"
     f = None
 
-    def __init__(self, env, filename, allow_early_resets=False, log_frames=True):
+    def __init__(self, env, filename, allow_early_resets=False, log_frames=False):
         Wrapper.__init__(self, env=env)
         self.tstart = time.time()
         if filename is None:

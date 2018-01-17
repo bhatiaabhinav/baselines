@@ -21,7 +21,7 @@ class NoopResetEnv(gym.Wrapper):
         if self.override_num_noops is not None:
             noops = self.override_num_noops
         else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
+            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1)  # pylint: disable=E1101
         assert noops > 0
         obs = None
         for _ in range(noops):
@@ -29,6 +29,7 @@ class NoopResetEnv(gym.Wrapper):
             if done:
                 obs = self.env.reset()
         return obs
+
 
 class FireResetEnv(gym.Wrapper):
     def __init__(self, env):
@@ -47,6 +48,7 @@ class FireResetEnv(gym.Wrapper):
             self.env.reset()
         return obs
 
+
 class EpisodicLifeEnv(gym.Wrapper):
     def __init__(self, env):
         """Make end-of-life == end-of-episode, but only reset on true game over.
@@ -54,7 +56,7 @@ class EpisodicLifeEnv(gym.Wrapper):
         """
         gym.Wrapper.__init__(self, env)
         self.lives = 0
-        self.was_real_done  = True
+        self.was_real_done = True
 
     def _step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -83,13 +85,14 @@ class EpisodicLifeEnv(gym.Wrapper):
         self.lives = self.env.unwrapped.ale.lives()
         return obs
 
+
 class MaxAndSkipEnv(gym.Wrapper):
     def __init__(self, env, skip=4):
         """Return only every `skip`-th frame"""
         gym.Wrapper.__init__(self, env)
         # most recent raw observations (for max pooling across time steps)
         self._obs_buffer = deque(maxlen=2)
-        self._skip       = skip
+        self._skip = skip
 
     def _step(self, action):
         """Repeat action, sum reward, and max over last observations."""
@@ -112,10 +115,51 @@ class MaxAndSkipEnv(gym.Wrapper):
         self._obs_buffer.append(obs)
         return obs
 
+
+class MaxEnv(gym.Wrapper):
+    def __init__(self, env, skip=4):
+        gym.Wrapper.__init__(self, env)
+        # most recent raw observations (for max pooling across time steps)
+        self._obs_buffer = deque(maxlen=2)
+
+    def _step(self, action):
+        """Repeat action, sum reward, and max over last observations."""
+        obs, reward, done, info = self.env.step(action)
+        self._obs_buffer.append(obs)
+        max_frame = np.max(np.stack(self._obs_buffer), axis=0)
+        return max_frame, reward, done, info
+
+    def _reset(self):
+        """Clear past frame buffer and init. to first obs. from inner env."""
+        self._obs_buffer.clear()
+        obs = self.env.reset()
+        self._obs_buffer.append(obs)
+        return obs
+
+
+class SkipEnv(gym.Wrapper):
+    def __init__(self, env, skip=4):
+        """Return only every `skip`-th frame"""
+        gym.Wrapper.__init__(self, env)
+        self._skip = skip
+
+    def _step(self, action):
+        total_reward = 0.0
+        done = None
+        for _ in range(self._skip):
+            obs, reward, done, info = self.env.step(action)
+            total_reward += reward
+            if done:
+                break
+
+        return obs, total_reward, done, info
+
+
 class ClipRewardEnv(gym.RewardWrapper):
     def _reward(self, reward):
         """Bin reward to {+1, 0, -1} by its sign."""
         return np.sign(reward)
+
 
 class WarpFrame(gym.ObservationWrapper):
     def __init__(self, env):
@@ -127,23 +171,25 @@ class WarpFrame(gym.ObservationWrapper):
     def _observation(self, obs):
         frame = np.dot(obs.astype('float32'), np.array([0.299, 0.587, 0.114], 'float32'))
         frame = np.array(Image.fromarray(frame).resize((self.res, self.res),
-            resample=Image.BILINEAR), dtype=np.uint8)
+                                                       resample=Image.BILINEAR), dtype=np.uint8)
         return frame.reshape((self.res, self.res, 1))
 
+
 class FrameStack(gym.Wrapper):
-    def __init__(self, env, k):
+    def __init__(self, env, k=3):
         """Buffer observations and stack across channels (last axis)."""
         gym.Wrapper.__init__(self, env)
         self.k = k
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
-        assert shp[2] == 1  # can only stack 1-channel frames
-        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], k))
+        # assert shp[2] == 1  # can only stack 1-channel frames
+        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], k * shp[2]))
 
     def _reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""
         ob = self.env.reset()
-        for _ in range(self.k): self.frames.append(ob)
+        for _ in range(self.k):
+            self.frames.append(ob)
         return self._observation()
 
     def _step(self, action):
@@ -154,6 +200,56 @@ class FrameStack(gym.Wrapper):
     def _observation(self):
         assert len(self.frames) == self.k
         return np.concatenate(self.frames, axis=2)
+
+
+class SkipAndFrameStack(gym.Wrapper):
+    def __init__(self, env, skip=4, k=4):
+        """Equivalent to SkipEnv(FrameStack(env, k), skip) but more efficient"""
+        gym.Wrapper.__init__(self, env)
+        self.k = k
+        self._skip = skip
+        self.frames = deque([], maxlen=k)
+        shp = env.observation_space.shape
+        assert shp[2] == 1  # can only stack 1-channel frames
+        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], k))
+
+    def _reset(self):
+        """Clear buffer and re-fill by duplicating the first observation."""
+        ob = self.env.reset()
+        for _ in range(self.k):
+            self.frames.append(ob)
+        return self._observation()
+
+    def _step(self, action):
+        total_reward = 0.0
+        done = None
+        for _ in range(self._skip):
+            ob, reward, done, info = self.env.step(action)
+            total_reward += reward
+            self.frames.append(ob)
+            if done:
+                break
+        return self._observation(), total_reward, done, info
+
+    def _observation(self):
+        assert len(self.frames) == self.k
+        return np.concatenate(self.frames, axis=2)
+
+
+class BreakoutContinuousActionWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = spaces.Box(-1, 1, shape=[1])
+
+    def _step(self, action):
+        if action < -1 / 3:
+            action = 3
+        elif action >= -1 / 3 and action <= 1 / 3:
+            action = 0
+        else:
+            action = 2
+        return self.env.step(action)
+
 
 def wrap_deepmind(env, episode_life=True, clip_rewards=True):
     """Configure environment for DeepMind-style Atari.
