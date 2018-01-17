@@ -286,7 +286,7 @@ class ExperienceBuffer:
 class OrnsteinUhlenbeckActionNoise:
     '''Based on http://math.stackexchange.com/questions/1287634/implementing-ornstein-uhlenbeck-in-matlab'''
 
-    def __init__(self, mu, sigma=0.2, theta=.15, dt=1e-2, x0=None):
+    def __init__(self, mu, sigma=0.2, theta=6, dt=1e-2, x0=None):
         self.theta = theta
         self.mu = mu
         self.sigma = sigma
@@ -504,11 +504,11 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     def act(obs):
         if no_explore:
             return actor.get_actions_and_q([obs])[0][0]
-        if f < exploration_period:
-            a = env.action_space.sample()
-            if 'ERS' in env_id:
-                a = normalize(a)
-            return a
+        # if f < exploration_period:
+        #     a = env.action_space.sample()
+        #     if 'ERS' in env_id:
+        #         a = normalize(a)
+        #     return a
         else:
             a, q = actor.get_actions_and_q([obs])
             a, q = a[0], q[0]
@@ -676,9 +676,9 @@ if __name__ == '__main__':
         tau = 0.005
         gamma = 0.99
         exploration_period = 100 * (1440 / 10)
-        pre_training_steps = 5000
+        pre_training_steps = 1000
         replay_memory_size_in_bytes = 2 * 1024 * 1024 * 1024
-        exploration_sigma = 0.02
+        exploration_sigma = 0.2
         Noise_type = OrnsteinUhlenbeckActionNoise
         learning_env_seed = seed
         learning_episodes = 5000
