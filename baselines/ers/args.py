@@ -1,3 +1,4 @@
+import ast
 import os
 import os.path
 from baselines import logger
@@ -35,8 +36,16 @@ def parse():
         '--no_training', help='whether to just play without training', type=bool, default=False)
     parser.add_argument('--run_no_prefix', default='run')
     parser.add_argument('--replay_memory_gigabytes', type=float, default=2.0)
+    parser.add_argument('--init_scale', type=float, default=0.0001)
+    parser.add_argument('--nn_size', default="[400,300,300]")
+    parser.add_argument('--generations', type=int, default=100)
+    parser.add_argument('--population_size', type=int, default=50)
+    parser.add_argument('--truncation_size', type=int, default=10)
+    parser.add_argument('--mutation_sigma', type=float, default=0.01)
 
     args = parser.parse_args()
+
+    args.nn_size = ast.literal_eval(args.nn_size)
 
     if args.logdir:
         for run_no in range(int(1e6)):
