@@ -166,11 +166,11 @@ def optimize(session, envs, generations, population_size, truncation_size, mutat
         fitness = eval_generation(cur_gen, args.seed + g * args.num_cpu)
         top_scores.append(max(fitness))
         average_scores.append(np.average(fitness))
-        min_scores.append(np.average(fitness))
+        min_scores.append(min(fitness))
         last_n = math.ceil(100 / args.num_cpu)
         moving_av_window_size = last_n * args.num_cpu
         print('Generation: {0}\tAv_Top_score: {1}\tAv_Av_score: {2}\tAv_Min_score: {3}\t(Av_window_size: {4})'.format(
-            g, np.average(top_scores[-last_n:]), np.average(average_scores[-last_n:]), np.average(min_scores[-last_n:]), moving_av_window_size))
+            g, np.average(top_scores[-last_n:]), np.average(average_scores[-last_n:]), np.average(min_scores[-last_n:]), moving_av_window_size), flush=True)
         # sort the population in decreasing order by fitness
         cur_gen = [param for param, score in sorted(
             zip(cur_gen, fitness), key=lambda pair:pair[1], reverse=True)]
