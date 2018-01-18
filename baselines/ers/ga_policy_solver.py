@@ -84,10 +84,11 @@ def random_params():
     return params
 
 
-def mutated(params, mutation_sigma):
+def mutated(params, mutation_sigma, interpret_as_max_sigma=True):
     return_params = []
+    sigma = mutation_sigma * np.random.rand() if interpret_as_max_sigma else mutation_sigma
     for p in params:
-        mutated_p = p + mutation_sigma * np.random.standard_normal(size=np.shape(p))
+        mutated_p = p + sigma * np.random.standard_normal(size=np.shape(p))
         return_params.append(mutated_p)
     return return_params
 
@@ -150,7 +151,8 @@ def optimize(session, envs, generations, population_size, truncation_size, mutat
     for g in range(generations):
         for idx in range(population_size):
             if g == 0:
-                cur_gen[idx] = mutated(Actor.get_instance().get_params(), mutation_sigma)
+                cur_gen[idx] = mutated(Actor.get_instance().get_params(),
+                                       mutation_sigma, interpret_as_max_sigma=False)
             else:
                 if idx == 0:
                     # for elitism. i.e. leave the top parent unmodified

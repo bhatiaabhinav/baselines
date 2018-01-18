@@ -39,9 +39,9 @@ def parse():
     parser.add_argument('--init_scale', type=float, default=0.0001)
     parser.add_argument('--nn_size', default="[400,300,300]")
     parser.add_argument('--generations', type=int, default=1000)
-    parser.add_argument('--population_size', type=int, default=16)
-    parser.add_argument('--truncation_size', type=int, default=8)
-    parser.add_argument('--mutation_sigma', type=float, default=0.02)
+    parser.add_argument('--population_size', type=int, default=30)
+    parser.add_argument('--truncation_size', type=int, default=7)
+    parser.add_argument('--mutation_sigma', type=float, default=0.03)
 
     args = parser.parse_args()
 
