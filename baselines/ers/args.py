@@ -6,8 +6,10 @@ from baselines import logger
 
 def parse():
     import argparse
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--env', help='environment ID', default='pyERSEnv-ca-dynamic-1440-v4')
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--env', help='environment ID',
+                        default='pyERSEnv-ca-dynamic-1440-v4')
     parser.add_argument(
         '--ob_dtype', help='datatype of observations eg. uint8, float32', default='float32')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
@@ -20,7 +22,8 @@ def parse():
     parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)',
                         type=float, default=7.2)  # 5000 = 625 * 8 episodes
     # parser.add_argument('--million_frames', help='How many frames to train (/ 1e6)', type=float, default=0.71424) # 520 = 65 * 8 episodes
-    parser.add_argument('--num_cpu', help='Number of parallel environments', type=int, default=16)
+    parser.add_argument(
+        '--num_cpu', help='Number of parallel environments', type=int, default=16)
     parser.add_argument(
         '--nsteps', help='an update happens every nsteps timesteps for each env', type=int, default=5)
     parser.add_argument(
@@ -39,9 +42,12 @@ def parse():
     parser.add_argument('--init_scale', type=float, default=0.0001)
     parser.add_argument('--nn_size', default="[400,300,300]")
     parser.add_argument('--generations', type=int, default=1000)
-    parser.add_argument('--population_size', type=int, default=30)
-    parser.add_argument('--truncation_size', type=int, default=7)
-    parser.add_argument('--mutation_sigma', type=float, default=0.03)
+    parser.add_argument('--population_size', type=int, default=50)
+    parser.add_argument('--truncation_size', type=int, default=10)
+    parser.add_argument('--mutation_sigma', type=float, default=0.02)
+    parser.add_argument('--test_mode', type=bool, default=False)
+    parser.add_argument('--test_episodes', type=int, default=100)
+    parser.add_argument('--test_seed', type=int, default=42)
 
     args = parser.parse_args()
 
