@@ -38,7 +38,7 @@ def parse():
     parser.add_argument(
         '--no_training', help='whether to just play without training', type=bool, default=False)
     parser.add_argument('--mb_size', type=int, default=64)
-    parser.add_argument('--tau', type=float, default=0.005)
+    parser.add_argument('--tau', type=float, default=0.001)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--exploration_episodes', type=int, default=100)
     parser.add_argument('--exploration_sigma', type=float, default=0.2)

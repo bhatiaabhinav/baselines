@@ -552,8 +552,12 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             #r += (1 - d) * gamma * actor.get_target_actions_and_q(s_next)[1]
             # double q learning:
             a_next = actor.get_actions_and_q(s_next)[0]
-            r += (1 - d) * gamma * actor.get_target_q(s_next, a_next)[0]
-            _, mse = actor.train_q(s, r, a)
+            q_desired = r + (1 - d) * gamma * actor.get_target_q(s_next, a_next)[0]
+            q_current = actor.get_actions_and_q(s)[1]
+            error = q_desired - q_current
+            clipped_error = np.clip(error, -1, 1)
+            q_desired = q_current + clipped_error
+            _, mse = actor.train_q(s, q_desired, a)
             actor.soft_update_target_networks()
         _, av_q = actor.train_a(s)
         if f % 100 == 0:
