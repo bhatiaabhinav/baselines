@@ -476,10 +476,10 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             adv_s_a = r + g * _Q(s_next, argmax_Q(s_next)) - _V(s)
             _, A_mse = actor.train_A(s, adv_s_a, actions=a)
 
-            # normally: V(s) = max(_Q(s, _))
-            # double Q: V(s) = _Q(s, argmax[Q(s, _)])
+            # V(s) = max(_Q(s, _))
             a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
-            v_s = v_s_cur + np.clip(_Q(s, a_s_cur) - v_s_cur, -1, 1)
+            v_s_target = _max_Q(s)
+            v_s = v_s_target
             _, V_mse = actor.train_V(s, v_s)
 
             actor.soft_update_target_networks()
