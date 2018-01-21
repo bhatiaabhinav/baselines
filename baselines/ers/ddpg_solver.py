@@ -65,16 +65,6 @@ class Actor:
                         else:
                             a = fc(
                                 a_h2, 'a', nh=ac_shape[0], act=tf.nn.tanh, init_scale=init_scale)
-                        # if scope == 'target':
-                        #     self.a_target = a
-                        # else:
-                        #     self.use_actions_feed = tf.placeholder(dtype=tf.bool)
-                        #     self.actions_feed = tf.placeholder(
-                        #         dtype=tf.float32, shape=[None] + list(ac_shape))
-                        #     self.a = tf.case([
-                        #         (self.use_actions_feed, lambda: self.actions_feed)
-                        #     ], default=lambda: a)
-                        #     a = self.a
                         use_actions_feed = tf.placeholder(dtype=tf.bool)
                         actions_feed = tf.placeholder(
                             dtype=tf.float32, shape=[None] + list(ac_shape))
@@ -332,7 +322,7 @@ class ExperienceBuffer:
 class OrnsteinUhlenbeckActionNoise:
     '''Based on http://math.stackexchange.com/questions/1287634/implementing-ornstein-uhlenbeck-in-matlab'''
 
-    def __init__(self, mu, sigma=0.2, theta=1, dt=1e-2, x0=None):
+    def __init__(self, mu, sigma=0.2, theta=6, dt=1e-2, x0=None):
         self.theta = theta
         self.mu = mu
         self.sigma = sigma

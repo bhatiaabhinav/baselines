@@ -41,7 +41,7 @@ def parse():
     parser.add_argument('--tau', type=float, default=0.005)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--exploration_episodes', type=int, default=100)
-    parser.add_argument('--exploration_sigma', type=float, default=0.1)
+    parser.add_argument('--exploration_sigma', type=float, default=0.2)
     parser.add_argument('--pre_training_steps', type=int, default=1000)
     parser.add_argument('--training_episodes', type=int, default=5000)
     parser.add_argument('--run_no_prefix', default='run')
