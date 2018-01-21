@@ -109,7 +109,10 @@ class Actor:
             tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/a'.format(name))
         self.av_q = tf.reduce_mean(self.q)
         with tf.control_dependencies(update_ops):
-            self.train_a_op = optimizer_a.minimize(-self.av_q, var_list=self.a_vars)
+            a_grads = tf.gradients(-self.av_q, self.a_vars)
+            a_grads, norm = tf.clip_by_global_norm(a_grads, clip_norm=1)
+            self.train_a_op = optimizer_a.apply_gradients(list(zip(a_grads, self.a_vars)))
+            # self.train_a_op = optimizer_a.minimize(-self.av_q, var_list=self.a_vars)
 
         # for training Q:
         self.q_vars = tf.get_collection(
@@ -119,7 +122,10 @@ class Actor:
         self.mse = tf.reduce_mean(se)
 
         with tf.control_dependencies(update_ops):
-            self.train_q_op = optimizer_q.minimize(self.mse, var_list=self.q_vars)
+            q_grads = tf.gradients(self.mse, self.q_vars)
+            q_grads, norm = tf.clip_by_global_norm(q_grads, clip_norm=1)
+            self.train_q_op = optimizer_q.apply_gradients(list(zip(q_grads, self.q_vars)))
+            # self.train_q_op = optimizer_q.minimize(self.mse, var_list=self.q_vars)
 
         # for updating target Q network:
         from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
@@ -347,7 +353,20 @@ class ERSEnvWrapper(gym.Wrapper):
         self.n_bases = env.action_space.shape[0]
         self.action_space = gym.spaces.Box(0, 1, shape=[self.n_bases])
 
+    def compute_alloc(self, action):
+        action = np.clip(action, 0, 1)
+        remaining = 1
+        alloc = np.zeros([self.n_bases])
+        for i in range(len(action)):
+            alloc[i] = action[i] * remaining
+            remaining -= alloc[i]
+        alloc[-1] = remaining
+        assert all(alloc >= 0) and all(alloc <= 1), "alloc is {0}".format(alloc)
+        # assert sum(alloc) == 1, "sum is {0}".format(sum(alloc))
+        return alloc
+
     def step(self, action):
+        # action = self.compute_alloc(action)
         print(np.round(self.n_ambs * action, decimals=2))
         obs, r, d, _ = super().step(action)
         assert list(obs.shape) == [21, 21, 21]
@@ -510,6 +529,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         return a
     Rs, no_explore_Rs, f = [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
+    pre_train = True
     for ep in range(learning_episodes if learning else test_episodes):
         obs, d, R, ep_l = env.reset(), False, 0, 0
         if learning:
@@ -517,7 +537,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         no_explore = (ep % 2 == 0) or not learning
         while not d:
             if learning and ep >= exploration_episodes and f % 4 == 0:
-                train(pre_train=(ep == exploration_episodes and f == 0))
+                train(pre_train=pre_train)
+                pre_train = False
             a = act(obs)
             obs_, r, d, _ = env.step(a)
             if render:
