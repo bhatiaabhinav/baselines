@@ -64,7 +64,7 @@ class Actor:
                         else:
                             self.use_actions_feed = tf.placeholder(dtype=tf.bool)
                             self.actions_feed = tf.placeholder(
-                                dtype=ob_dtype, shape=[None] + list(ac_shape))
+                                dtype=tf.float32, shape=[None] + list(ac_shape))
                             self.a = tf.case([
                                 (self.use_actions_feed, lambda: self.actions_feed)
                             ], default=lambda: a)
@@ -90,7 +90,7 @@ class Actor:
                         s_a_concat = tf.concat([s, a], axis=-1)
                         # two hidden layers after concating s,a
                         q_h1 = fc(s_a_concat, 'q_h1', nh=nn_size[1])
-                        q_h2 = fc(q_h1, 'q_h2', nh=nn_size[1])
+                        q_h2 = fc(q_h1, 'q_h2', nh=nn_size[2])
                         q = fc(q_h2, 'q', 1,
                                act=lambda x: x, init_scale=init_scale)[:, 0]
                         if scope == 'target':
@@ -472,7 +472,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         env = W(env)  # type: gym.Wrapper
     if actor is None:
         actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape,
-                      ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
+                      ob_dtype=ob_dtype, q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
         sess.run(tf.global_variables_initializer())
     actor.update_target_networks()
     if load_path:
@@ -485,8 +485,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         experience_buffer = ExperienceBuffer(size_in_bytes=replay_memory_size_in_bytes)
         noise = Noise_type(mu=np.zeros(env.action_space.shape), sigma=exploration_sigma)
 
-    def train():
-        count = pre_training_steps if f == exploration_period else 1
+    def train(pre_train=False):
+        count = pre_training_steps if pre_train else 1
         for c in range(count):
             mb = list(experience_buffer.random_experiences(
                 count=minibatch_size))  # type: List[Experience]
@@ -502,16 +502,9 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     def act(obs):
         if no_explore:
             return actor.get_actions_and_q([obs])[0][0]
-        # if f < exploration_period:
-        #     a = env.action_space.sample()
-        #     if 'ERS' in env_id:
-        #         a = normalize(a)
-        #     return a
         else:
             a, q = actor.get_actions_and_q([obs])
             a, q = a[0], q[0]
-            # if 'ERS' in env_id:
-            # print('a=\t\t{0}\tq= {1}'.format(a,q))
         a += noise()
         a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
         return a
@@ -523,8 +516,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             noise.reset()
         no_explore = (ep % 2 == 0) or not learning
         while not d:
-            if learning and f >= exploration_period and f % 4 == 0:
-                train()
+            if learning and ep >= exploration_episodes and f % 4 == 0:
+                train(pre_train=(ep == exploration_episodes and f == 0))
             a = act(obs)
             obs_, r, d, _ = env.step(a)
             if render:
@@ -601,7 +594,7 @@ def ensembled_test_on_env(sess, model_paths):
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
         env = W(env)  # type: gym.Wrapper
-    actors = [Actor(sess, 'actor{0}'.format(i), env.observation_space.shape, env.action_space.shape, ob_dtype='float32',
+    actors = [Actor(sess, 'actor{0}'.format(i), env.observation_space.shape, env.action_space.shape, ob_dtype=ob_dtype,
                     q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau) for i in range(len(model_paths))]
     sess.run(tf.global_variables_initializer())
     for actor, path in zip(actors, model_paths):
@@ -635,95 +628,39 @@ if __name__ == '__main__':
     seed = args.seed
     print('Seed: {0}'.format(seed))
     np.random.seed(seed)
+    ob_dtype = args.ob_dtype
+    minibatch_size = args.mb_size
+    tau = args.tau
+    gamma = args.gamma
+    exploration_episodes = args.exploration_episodes
+    pre_training_steps = args.pre_training_steps
+    replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
+    exploration_sigma = args.exploration_sigma
+    Noise_type = OrnsteinUhlenbeckActionNoise
+    learning_env_seed = seed
+    learning_episodes = args.training_episodes
+    test_env_seed = args.test_seed
+    test_episodes = args.test_episodes
+    use_layer_norm = args.use_layer_norm
+    nn_size = args.nn_size
+    init_scale = args.init_scale
+    ensembled_act = max_borda_count
+    render = args.render
+    save_path = 'models/{0}/{1}/model'.format(env_id, seed)
+    load_path = save_path
     if 'ERSEnv-ca' in env_id:
-        ob_dtype = 'float32'
+        ob_dtype = args.ob_dtype
         wrappers = [ERSEnvWrapper]
-        minibatch_size = 256
-        tau = 0.01
-        gamma = 0.99
-        exploration_period = 2000
-        pre_training_steps = 2000
-        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
-        exploration_sigma = 0.02
-        Noise_type = OrnsteinUhlenbeckActionNoise
-        learning_env_seed = seed
-        learning_episodes = 1500
-        test_env_seed = 42
-        test_episodes = 100
-        use_layer_norm = True
-        nn_size = [400, 300]
-        init_scale = 1e-3
-        ensembled_act = max_borda_count
-        render = False
-        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
-        load_path = save_path
     elif 'ERSEnv-im' in env_id:
         ob_dtype = 'uint8'
         wrappers = [FrameStack, ERSEnvWrapper]
-        minibatch_size = 64
-        tau = 0.005
-        gamma = 0.99
-        exploration_period = 100 * (1440 / 10)
-        pre_training_steps = 1000
-        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
-        exploration_sigma = 0.2
-        Noise_type = OrnsteinUhlenbeckActionNoise
-        learning_env_seed = seed
-        learning_episodes = 5000
-        test_env_seed = 42
-        test_episodes = 100
-        use_layer_norm = True
-        nn_size = [512, 512]
-        init_scale = 1e-4
-        ensembled_act = max_borda_count
-        render = False
-        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
-        load_path = save_path
     elif 'Pole' in env_id:
         ob_dtype = 'float32'
         wrappers = [CartPoleWrapper]
-        minibatch_size = 64
-        tau = 0.01
-        gamma = 0.99
-        exploration_period = 1000
-        pre_training_steps = 1000
-        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
-        exploration_sigma = 0.2
-        Noise_type = OrnsteinUhlenbeckActionNoise
-        learning_env_seed = seed
-        learning_episodes = 1000
-        test_env_seed = 0
-        test_episodes = 100
-        use_layer_norm = False
-        nn_size = [400, 300]
-        init_scale = 1e-3
-        ensembled_act = max_borda_count
-        render = False
-        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
-        load_path = save_path
     elif 'NoFrameskip' in env_id:
         ob_dtype = 'uint8'
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame,
                     SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
-        minibatch_size = 16
-        tau = 0.001
-        gamma = 0.99
-        exploration_period = 1000
-        pre_training_steps = 500
-        replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
-        exploration_sigma = 0.6
-        Noise_type = OrnsteinUhlenbeckActionNoise
-        learning_env_seed = seed
-        learning_episodes = 10000
-        test_env_seed = 0
-        test_episodes = 100
-        use_layer_norm = False
-        nn_size = [200, 200]
-        init_scale = 1e-4
-        ensembled_act = max_borda_count
-        render = False
-        save_path = 'models/{0}/{1}/model'.format(env_id, seed)
-        load_path = save_path
     # with tf.Session() as sess: test(sess)
     # test_envs()
     with tf.Session() as sess:
