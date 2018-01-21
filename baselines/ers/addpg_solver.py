@@ -447,6 +447,12 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     def V(s):
         return actor.get_a_V_A_Q(s)[1]
 
+    def A(s, a):
+        return actor.get_V_A_Q(s, a)[1]
+
+    def max_A(s):
+        return actor.get_a_V_A_Q(s)[2]
+
     def argmax_Q(s):
         return actor.get_a_V_A_Q(s)[0]
 
@@ -455,6 +461,9 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
 
     def _max_Q(s):
         return actor.get_target_a_V_A_Q(s)[3]
+
+    def _max_A(s):
+        return actor.get_target_a_V_A_Q(s)[2]
 
     def _V(s):
         return actor.get_target_a_V_A_Q(s)[1]
@@ -473,14 +482,18 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
 
             # nomrally: A(s,a) = r + gamma * max[_Q(s_next, _)] - _V(s)
             # double Q: A(s,a) = r + gamma * _Q(s_next, argmax[Q(s_next, _)]) - _V(s)
-            adv_s_a = r + g * _Q(s_next, argmax_Q(s_next)) - _V(s)
+            adv_s_a = _max_A(s) + r + g * _V(s_next) - _V(s)
             _, A_mse = actor.train_A(s, adv_s_a, actions=a)
 
             # V(s) = max(_Q(s, _))
             a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
-            v_s_target = _max_Q(s)
-            v_s = v_s_target
+            # v_s_target = _max_Q(s)
+            v_s = _V(s) + max_A_cur - _max_A(s)
             _, V_mse = actor.train_V(s, v_s)
+
+            # normalize A:
+            adv_s_a = A(s, a) - _max_A(s)
+            _, _ = actor.train_A(s, adv_s_a, actions=a)
 
             actor.soft_update_target_networks()
 
