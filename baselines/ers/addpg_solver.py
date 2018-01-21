@@ -1,18 +1,22 @@
-from typing import List
-import numpy as np
-from scipy.stats import rankdata
-import tensorflow as tf
-from baselines.a2c.utils import fc, conv, conv_to_fc
-import gym
-import gym_ERSLE
-from baselines import logger
-import os.path
+"""
+dualing network style advantageous DDPG
+"""
+
 import os
-import joblib
-from baselines import bench
-from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+import os.path
 import sys
-from baselines.common.atari_wrappers import *
+from typing import List
+
+import gym
+import joblib
+import numpy as np
+import tensorflow as tf
+
+import gym_ERSLE
+from baselines.a2c.utils import conv, conv_to_fc, fc
+from baselines.common.atari_wrappers import FrameStack, EpisodicLifeEnv,\
+    NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame, SkipAndFrameStack,\
+    ClipRewardEnv, BreakoutContinuousActionWrapper
 
 
 class Actor:
@@ -99,16 +103,21 @@ class Actor:
                             s_h1 = tf.layers.batch_normalization(s_h1)
                         s_h1 = tf.nn.relu(s_h1)
                         s = s_h1
+                        # the advantage network:
                         s_a_concat = tf.concat([s, a], axis=-1)
-                        # two hidden layers after concating s,a
-                        q_h1 = fc(s_a_concat, 'q_h1', nh=nn_size[1])
-                        q_h2 = fc(q_h1, 'q_h2', nh=nn_size[2])
-                        q = fc(q_h2, 'q', 1,
-                               act=lambda x: x, init_scale=init_scale)[:, 0]
+                        A_h1 = fc(s_a_concat, 'A_h1', nh=nn_size[1])
+                        A = fc(A_h1, 'A', 1, act=lambda x: x,
+                               init_scale=init_scale)[:, 0]
+                        # the value network:
+                        V_h1 = fc(s, 'V_h1', nh=nn_size[1])
+                        V = fc(V_h1, 'V', 1, act=lambda x: x,
+                               init_scale=init_scale)[:, 0]
+                        # q:
+                        Q = V + A
                         if scope == 'target':
-                            self.q_target = q
+                            self.V_target, self.A_target, self.Q_target = V, A, Q
                         else:
-                            self.q = q
+                            self.V, self.A, self.Q = V, A, Q
 
         # optimizers:
         optimizer_q = tf.train.AdamOptimizer(learning_rate=q_lr)
@@ -116,163 +125,153 @@ class Actor:
 
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
-        # for training actions:
+        # for training actions: maximize Advantage i.e. A
         self.a_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/a'.format(name))
-        self.av_q = tf.reduce_mean(self.q)
+        self.av_A = tf.reduce_mean(self.A)
         with tf.control_dependencies(update_ops):
-            a_grads = tf.gradients(-self.av_q, self.a_vars)
+            a_grads = tf.gradients(-self.av_A, self.a_vars)
             a_grads, norm = tf.clip_by_global_norm(a_grads, clip_norm=1)
             self.train_a_op = optimizer_a.apply_gradients(
                 list(zip(a_grads, self.a_vars)))
-            # self.train_a_op = optimizer_a.minimize(-self.av_q, var_list=self.a_vars)
+            # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
 
-        # for training Q:
-        self.q_vars = tf.get_collection(
+        # for training V:
+        self.V_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/q'.format(name))
-        self.q_target_feed = tf.placeholder(dtype='float32', shape=[None])
-        se = tf.square(self.q - self.q_target_feed) / 2
-        self.mse = tf.reduce_mean(se)
-
+        self.V_target_feed = tf.placeholder(dtype='float32', shape=[None])
+        se = tf.square(self.V - self.V_target_feed) / 2
+        self.V_mse = tf.reduce_mean(se)
         with tf.control_dependencies(update_ops):
-            q_grads = tf.gradients(self.mse, self.q_vars)
-            q_grads, norm = tf.clip_by_global_norm(q_grads, clip_norm=1)
-            self.train_q_op = optimizer_q.apply_gradients(
-                list(zip(q_grads, self.q_vars)))
-            # self.train_q_op = optimizer_q.minimize(self.mse, var_list=self.q_vars)
+            V_grads = tf.gradients(self.V_mse, self.V_vars)
+            V_grads, norm = tf.clip_by_global_norm(V_grads, clip_norm=1)
+            self.train_V_op = optimizer_q.apply_gradients(
+                list(zip(V_grads, self.V_vars)))
+            # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
 
-        # for updating target Q network:
+        # for training A:
+        self.A_vars = tf.get_collection(
+            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/q'.format(name))
+        self.A_target_feed = tf.placeholder(dtype='float32', shape=[None])
+        se = tf.square(self.A - self.A_target_feed) / 2
+        self.A_mse = tf.reduce_mean(se)
+        with tf.control_dependencies(update_ops):
+            A_grads = tf.gradients(self.A_mse, self.A_vars)
+            A_grads, norm = tf.clip_by_global_norm(A_grads, clip_norm=1)
+            self.train_A_op = optimizer_q.apply_gradients(
+                list(zip(A_grads, self.A_vars)))
+            # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
+
+        # for updating target network:
         from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                      '{0}/original/q'.format(name))
+                                      '{0}/original'.format(name))
         to_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/target/q'.format(name))
-        self.update_target_q_network_op, self.soft_update_target_q_network_op = [], []
+            tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/target'.format(name))
+        self.update_target_network_op, self.soft_update_target_network_op = [], []
         for from_var, to_var in zip(from_vars, to_vars):
-            self.update_target_q_network_op.append(to_var.assign(from_var))
-            self.soft_update_target_q_network_op.append(
+            self.update_target_network_op.append(to_var.assign(from_var))
+            self.soft_update_target_network_op.append(
                 to_var.assign(tau * from_var + (1 - tau) * to_var))
 
-        # for updating target a network:
-        from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                      '{0}/original/a'.format(name))
-        to_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/target/a'.format(name))
-        self.update_target_a_network_op, self.soft_update_target_a_network_op = [], []
-        for from_var, to_var in zip(from_vars, to_vars):
-            self.update_target_a_network_op.append(to_var.assign(from_var))
-            self.soft_update_target_a_network_op.append(
-                to_var.assign(tau * from_var + (1 - tau) * to_var))
-
+        # for saving and loading
         self.params = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, '{0}'.format(name))
+        self.load_placeholders = []
+        self.load_ops = []
+        for p in self.params:
+            p_placeholder = tf.placeholder(
+                shape=p.shape.as_list(), dtype=tf.float32)
+            self.load_placeholders.append(p_placeholder)
+            self.load_ops.append(p.assign(p_placeholder))
 
-        self.writer = tf.summary.FileWriter('summary/ddpg', self.session.graph)
+        # for visualizing computation graph in tensorboard
+        self.writer = tf.summary.FileWriter(
+            'summary/addpg', self.session.graph)
 
-    def get_actions_and_q(self, states):
-        ops, feed = self.get_actions_and_q_op_and_feed_dict(states)
+    def get_a_V_A_Q(self, states):
+        ops, feed = self.get_a_V_A_Q_op_and_feed(states)
         return self.session.run(ops, feed_dict=feed)
 
-    def get_actions_and_q_op_and_feed_dict(self, states):
-        return [self.a, self.q], {self.states_feed: states, self.use_actions_feed: False, self.actions_feed: [np.zeros(self.ac_shape)]}
+    def get_a_V_A_Q_op_and_feed(self, states):
+        return [self.a, self.V, self.A, self.Q], {self.states_feed: states, self.use_actions_feed: False, self.actions_feed: [np.zeros(self.ac_shape)]}
 
-    def get_q(self, states, actions):
-        ops, feed = self.get_q_op_and_feed(states, actions)
+    def get_V_A_Q(self, states, actions):
+        ops, feed = self.get_V_A_Q_op_and_feed(states, actions)
         return self.session.run(ops, feed_dict=feed)
 
-    def get_q_op_and_feed(self, states, actions):
-        return [self.q], {self.states_feed: states, self.use_actions_feed: True, self.actions_feed: actions}
+    def get_V_A_Q_op_and_feed(self, states, actions):
+        return [self.V, self.A, self.Q], {self.states_feed: states, self.use_actions_feed: True, self.actions_feed: actions}
 
-    def train_q(self, states, target_q, actions=None):
-        ops, feed = self.get_train_q_op_and_feed(
-            states, target_q, actions=actions)
+    def train_V(self, states, target_V):
+        ops, feed = self.get_train_V_op_and_feed(
+            states, target_V)
         return self.session.run(ops, feed_dict=feed)
 
-    def get_train_q_op_and_feed(self, states, target_q, actions=None):
+    def get_train_V_op_and_feed(self, states, target_V):
+        return [self.train_V_op, self.V_mse], {self.states_feed: states, self.V_target_feed: target_V}
+
+    def train_A(self, states, target_A, actions=None):
+        ops, feed = self.get_train_A_op_and_feed(
+            states, target_A, actions=actions)
+        return self.session.run(ops, feed_dict=feed)
+
+    def get_train_A_op_and_feed(self, states, target_A, actions=None):
         use_actions_feed = actions is not None
         if actions is None:
             actions = [np.zeros(self.ac_shape)]
-        return [self.train_q_op, self.mse], {self.states_feed: states, self.use_actions_feed: use_actions_feed, self.actions_feed: actions, self.q_target_feed: target_q}
+        return [self.train_A_op, self.A_mse], {self.states_feed: states, self.use_actions_feed: use_actions_feed, self.actions_feed: actions, self.A_target_feed: target_A}
 
     def train_a(self, states):
         ops, feed = self.get_train_a_op_and_feed(states)
         return self.session.run(ops, feed_dict=feed)
 
     def get_train_a_op_and_feed(self, states):
-        return [self.train_a_op, self.av_q], {self.states_feed: states, self.use_actions_feed: False, self.actions_feed: [np.zeros(self.ac_shape)]}
+        return [self.train_a_op, self.av_A], {self.states_feed: states, self.use_actions_feed: False, self.actions_feed: [np.zeros(self.ac_shape)]}
 
-    def get_target_actions_and_q(self, states):
-        ops, feed = self.get_target_actions_and_q_op_and_feed(states)
+    def get_target_a_V_A_Q(self, states):
+        ops, feed = self.get_target_a_V_A_Q_op_and_feed(states)
         return self.session.run(ops, feed_dict=feed)
 
-    def get_target_actions_and_q_op_and_feed(self, states):
-        return [self.a_target, self.q_target], \
+    def get_target_a_V_A_Q_op_and_feed(self, states):
+        return [self.a_target, self.V_target, self.A_target, self.Q_target], \
             {self.states_feed_target: states,
              self.use_actions_feed_target: False,
              self.actions_feed_target: [np.zeros(self.ac_shape)]}
 
-    def get_target_q(self, states, actions):
-        ops, feed = self.get_target_q_op_and_feed(states, actions)
+    def get_target_V_A_Q(self, states, actions):
+        ops, feed = self.get_target_V_A_Q_op_and_feed(states, actions)
         return self.session.run(ops, feed_dict=feed)
 
-    def get_target_q_op_and_feed(self, states, actions):
-        return [self.q_target], {self.states_feed_target: states, self.use_actions_feed_target: True, self.actions_feed_target: actions}
+    def get_target_V_A_Q_op_and_feed(self, states, actions):
+        return [self.V_target, self.A_target, self.Q_target], {self.states_feed_target: states, self.use_actions_feed_target: True, self.actions_feed_target: actions}
 
     def update_target_networks(self):
-        ops_q, feed = self.get_update_target_q_network_op_and_feed()
-        ops_a, feed_a = self.get_update_target_a_network_op_and_feed()
-        feed.update(feed_a)
-        self.session.run(ops_q + ops_a, feed_dict=feed)
+        ops, feed = self.get_update_target_network_op_and_feed()
+        self.session.run(ops, feed_dict=feed)
 
     def soft_update_target_networks(self):
-        ops_q, feed = self.get_soft_update_target_q_network_op_and_feed()
-        ops_a, feed_a = self.get_soft_update_target_a_network_op_and_feed()
-        feed.update(feed_a)
-        self.session.run(ops_q + ops_a, feed_dict=feed)
+        ops, feed = self.get_soft_update_target_network_op_and_feed()
+        self.session.run(ops, feed_dict=feed)
 
-    def get_update_target_q_network_op_and_feed(self):
-        return [self.update_target_q_network_op], {}
+    def get_update_target_network_op_and_feed(self):
+        return [self.update_target_network_op], {}
 
-    def get_soft_update_target_q_network_op_and_feed(self):
-        return [self.soft_update_target_q_network_op], {}
-
-    def get_update_target_a_network_op_and_feed(self):
-        return [self.update_target_a_network_op], {}
-
-    def get_soft_update_target_a_network_op_and_feed(self):
-        return [self.soft_update_target_a_network_op], {}
+    def get_soft_update_target_network_op_and_feed(self):
+        return [self.soft_update_target_network_op], {}
 
     def save(self, save_path):
-        ps = self.session.run(self.params)
+        params = self.session.run(self.params)
         from baselines.a2c.utils import make_path
         make_path(os.path.dirname(save_path))
-        joblib.dump(ps, save_path)
+        joblib.dump(params, save_path)
         self.writer.flush()
 
     def load(self, load_path):
-        loaded_params = joblib.load(load_path)
-        restores = []
-        for p, loaded_p in zip(self.params, loaded_params):
-            restores.append(p.assign(loaded_p))
-        self.session.run(restores)
-
-    def set_vars(self, newvars):
+        params = joblib.load(load_path)
         feed_dict = {}
-        for v, v_feed in zip(newvars, self.vars_feed_holder):
-            feed_dict[v_feed] = v
-        self.session.run(self.set_vars_op, feed_dict=feed_dict)
-
-    def copy_to(self, other, mutation_probability=0, max_mutation=0.3):
-        other = other  # type: Recommender
-        self_vars = self.get_vars()
-        if mutation_probability > 0:
-            for i in range(len(self_vars)):
-                v = self_vars[i]
-                mutations = np.random.standard_normal(
-                    np.shape(v)) * max_mutation
-                mutations_gate = np.random.random_sample(
-                    np.shape(v)) < mutation_probability
-                self_vars[i] = v + mutations_gate * mutations
-        other.set_vars(self_vars)
+        for p, p_placeholder in zip(params, self.load_placeholders):
+            feed_dict[p_placeholder] = p
+        self.session.run(self.load_ops, feed_dict=feed_dict)
 
 
 class Experience:
@@ -410,110 +409,6 @@ class ERSEnvWrapper(gym.Wrapper):
         return obs, r, d, _
 
 
-def test(sess):
-    a = Actor(sess, 'actor', [5], [2], ob_dtype='float32', q_lr=1e-3,
-              a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
-    sess.run(tf.global_variables_initializer())
-    a.update_target_networks()
-    s = [[0.1, 0.2, 0.1, 0.5, -0.1]]
-
-    # print('Loading model')
-    # a.load('/home/abhinav/models/{0}'.format(a.name))
-
-    print('initial a&q on s={0}'.format(s[0]))
-    print(a.get_actions_and_q(s))
-
-    print('\nTraining q...')
-    for i in range(500):
-        _, mse = a.train_q([s[0]] * 9, actions=[[-1, -1], [1, 1], [-1, 1], [1, -1], [-0.5, 0],
-                                                [0, -0.5], [0, 0.5], [1, 0], [0.5, 0]], target_q=[0, 0, 0, 0, 0.5, 0.5, 0.5, 0.5, 1])
-        if i % 100 == 0:
-            print('mse: {0}'.format(mse))
-
-    print('After training q values:')
-    print(a.get_q([s[0]] * 9, [[-1, -1], [1, 1], [-1, 1], [1, -1],
-                               [-0.5, 0], [0, -0.5], [0, 0.5], [1, 0], [0.5, 0]]))
-
-    print('old a')
-    print(a.get_actions_and_q(s))
-    print('\nTraining a...')
-    for i in range(500):
-        a.train_a(s)
-    print('New a & q:')
-    print(a.get_actions_and_q(s))
-
-    print('confirming target network gives same values:')
-    a.update_target_networks()
-    print(a.get_target_actions_and_q(s))
-
-    print('Saving network')
-    a.save('models/test1/{0}'.format(a.name))
-
-
-def test2(sess):
-    a = Actor(sess, 'actor', [5], [1], ob_dtype='float32', q_lr=1e-3,
-              a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
-    sess.run(tf.global_variables_initializer())
-    a.update_target_networks()
-    s = [[0.1, 0.2, 0.1, 0.5, -0.1]]
-
-    print('initial a&q on s={0}'.format(s[0]))
-    print(a.get_actions_and_q(s))
-
-    actions = [[0], [0.5], [1]]
-    print('\nTraining q...')
-    for i in range(2000):
-        _, mse = a.train_q([s[0]] * 3, actions=actions, target_q=[9, 10, 8])
-        if i % 100 == 0:
-            print('mse: {0}'.format(mse))
-
-    print('After training q values:')
-    print(a.get_q([s[0]] * 3, actions))
-
-    print('old a')
-    print(a.get_actions_and_q(s))
-    print('\nTraining a...')
-    for i in range(500):
-        a.train_a(s)
-    print('New a & q:')
-    print(a.get_actions_and_q(s))
-
-    print('confirming target network gives same values:')
-    a.update_target_networks()
-    print(a.get_target_actions_and_q(s))
-
-
-def test_envs():
-    num_envs = 4
-
-    def make_env(rank):
-        def _thunk():
-            print('Making env {0}'.format(env_id))
-            env = gym.make(env_id)
-            env.seed(seed + rank)
-            # env = bench.Monitor(env, logger.get_dir() and
-            #    os.path.join(logger.get_dir(), "{}.monitor.json".format(rank)), allow_early_resets = (policy in ('greedy', 'ga', 'rat')))
-            # gym.logger.setLevel(logging.WARN)
-            # return ObsExpandWrapper(env)
-            # return NoopFrameskipWrapper(ObsExpandWrapper(env))
-            return env
-        return _thunk
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    Rs = []
-    for ep in range(3):
-        obs = env.reset()
-        d = False
-        R = np.zeros([num_envs])
-        while not d:
-            obs, r, d, info = env.step(
-                [np.array([4, 4, 2, 0, 3, 5]) / 18] * num_envs)
-            R += r
-            d = d[0]
-        Rs.append(R)
-        print(R)
-    env.close()
-
-
 def normalize(a):
     a = np.clip(a, 0, 1)
     a = a + 1e-6
@@ -543,6 +438,30 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         noise = Noise_type(mu=np.zeros(
             env.action_space.shape), sigma=exploration_sigma)
 
+    def Q(s, a):
+        return actor.get_V_A_Q(s, a)[2]
+
+    def max_Q(s):
+        return actor.get_a_V_A_Q(s)[3]
+
+    def V(s):
+        return actor.get_a_V_A_Q(s)[1]
+
+    def argmax_Q(s):
+        return actor.get_a_V_A_Q(s)[0]
+
+    def _Q(s, a):
+        return actor.get_target_V_A_Q(s, a)[2]
+
+    def _max_Q(s):
+        return actor.get_target_a_V_A_Q(s)[3]
+
+    def _V(s):
+        return actor.get_target_a_V_A_Q(s)[1]
+
+    def _argmax_Q(s):
+        return actor.get_target_a_V_A_Q(s)[0]
+
     def train(pre_train=False):
         count = pre_training_steps if pre_train else 1
         for c in range(count):
@@ -550,26 +469,33 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
                 count=minibatch_size))  # type: List[Experience]
             s, a, s_next, r, d = [e.state for e in mb], [e.action for e in mb], [
                 e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
-            #r += (1 - d) * gamma * actor.get_target_actions_and_q(s_next)[1]
-            # double q learning:
-            a_next = actor.get_actions_and_q(s_next)[0]
-            q_desired = r + (1 - d) * gamma * actor.get_target_q(s_next, a_next)[0]
-            q_current = actor.get_actions_and_q(s)[1]
-            error = q_desired - q_current
-            clipped_error = np.clip(error, -1, 1)
-            q_desired = q_current + clipped_error
-            _, mse = actor.train_q(s, q_desired, a)
+            g = (1 - d) * gamma
+
+            # nomrally: A(s,a) = r + gamma * max[_Q(s_next, _)] - _V(s)
+            # double Q: A(s,a) = r + gamma * _Q(s_next, argmax[Q(s_next, _)]) - _V(s)
+            adv_s_a = r + g * _Q(s_next, argmax_Q(s_next)) - _V(s)
+            _, A_mse = actor.train_A(s, adv_s_a, actions=a)
+
+            # normally: V(s) = max(_Q(s, _))
+            # double Q: V(s) = _Q(s, argmax[Q(s, _)])
+            a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
+            v_s = v_s_cur + np.clip(_Q(s, a_s_cur) - v_s_cur, -1, 1)
+            _, V_mse = actor.train_V(s, v_s)
+
             actor.soft_update_target_networks()
-        _, av_q = actor.train_a(s)
+
+        _, av_A = actor.train_a(s)
+
         if f % 100 == 0:
-            print('mse: {0}\tav_q:{1}'.format(mse, av_q))
+            print('V_mse: {0}\tAv_V: {1}\tA_mse: {2}\tAv_A: {3}'.format(
+                V_mse, np.average(v_s_cur), A_mse, av_A))
 
     def act(obs):
         if no_explore:
-            return actor.get_actions_and_q([obs])[0][0]
+            return actor.get_a_V_A_Q([obs])[0][0]
         else:
-            a, q = actor.get_actions_and_q([obs])
-            a, q = a[0], q[0]
+            a, value, adv, q = actor.get_a_V_A_Q([obs])
+            a, value, adv, q = a[0], value[0], adv[0], q[0]
         a += noise()
         a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
         return a
@@ -613,83 +539,6 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     return actor
 
 
-selected_actor_percentage = {}
-
-
-def most_confident_act(actors: List[Actor], obs):
-    a_q_pairs = [actor.get_actions_and_q([obs]) for actor in actors]
-    qs = [x[1][0] for x in a_q_pairs]
-    selected = np.argmax(qs)
-    selected_actor_percentage[selected] += 1
-    print('Selected actor\'s index: {0}'.format(selected))
-    return max(a_q_pairs, key=lambda x: x[1][0])[0][0]
-
-
-def average_act(actors: List[Actor], obs):
-    a = [actor.get_actions_and_q([obs])[0][0] for actor in actors]
-    return np.average(np.asarray(a), axis=0)
-
-
-def max_average_q(actors: List[Actor], obs):
-    all_a = [actor.get_actions_and_q([obs])[0][0] for actor in actors]
-    all_q = np.zeros(shape=[len(actors)])
-    for actor in actors:
-        all_qs_acc_to_this_actor = actor.get_q(
-            states=[obs] * len(actors), actions=all_a)[0]
-        all_q += all_qs_acc_to_this_actor
-    selected = np.argmax(all_q)
-    selected_actor_percentage[selected] += 1
-    print('Selected actor\'s index: {0}'.format(selected))
-    return all_a[selected]
-
-
-def max_borda_count(actors: List[Actor], obs, average_as_candidate=True):
-    all_a = [actor.get_actions_and_q([obs])[0][0] for actor in actors]
-    if average_as_candidate:
-        all_a.append(np.average(np.asarray(all_a), axis=0))
-    all_a_borda_count = np.zeros(shape=[len(all_a)])
-    for actor in actors:
-        all_qs_acc_to_this_actor = actor.get_q(
-            states=[obs] * len(all_a), actions=all_a)[0]
-        all_a_bc_acc_to_this_actor = rankdata(all_qs_acc_to_this_actor)
-        all_a_borda_count += all_a_bc_acc_to_this_actor
-    selected = np.argmax(all_a_borda_count)
-    selected_actor_percentage[selected] += 1
-    print('Selected actor\'s index: {0}'.format(selected))
-    return all_a[selected]
-
-
-def ensembled_test_on_env(sess, model_paths):
-    np.random.seed(seed)
-    env = gym.make(env_id)  # type: gym.Env
-    for W in wrappers:
-        env = W(env)  # type: gym.Wrapper
-    actors = [Actor(sess, 'actor{0}'.format(i), env.observation_space.shape, env.action_space.shape, ob_dtype=ob_dtype,
-                    q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau) for i in range(len(model_paths))]
-    sess.run(tf.global_variables_initializer())
-    for actor, path in zip(actors, model_paths):
-        actor.load(path)
-    print('Models Loaded')
-    Rs, f = [], 0
-    env.seed(test_env_seed)
-    for ep in range(test_episodes):
-        obs, d, R, ep_l = env.reset(), False, 0, 0
-        while not d:
-            a = ensembled_act(actors, obs)
-            obs_, r, d, _ = env.step(a)
-            obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
-        if 'ERS' in env_id:
-            R = 200 * R
-        Rs.append(R)
-        av = np.average(Rs[-25:])
-        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}'.format(
-            ep, R, ep_l, av))
-    env.close()
-    print('Average reward per episode: {0}'.format(np.average(Rs)))
-
-# class Configured_Monitor(bench.Monitor):
-
-
 if __name__ == '__main__':
     # config = tf.ConfigProto(device_count={'GPU': 0})
     from baselines.ers.args import parse
@@ -715,7 +564,6 @@ if __name__ == '__main__':
     use_layer_norm = args.use_layer_norm
     nn_size = args.nn_size
     init_scale = args.init_scale
-    ensembled_act = max_borda_count
     render = args.render
     save_path = 'models/{0}/{1}/model'.format(env_id, seed)
     load_path = save_path
@@ -732,8 +580,6 @@ if __name__ == '__main__':
         ob_dtype = 'uint8'
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame,
                     SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
-    # with tf.Session() as sess: test(sess)
-    # test_envs()
     with tf.Session() as sess:
         print('Training actor. seed={0}. learning_env_seed={1}'.format(
             seed, learning_env_seed))
@@ -745,10 +591,3 @@ if __name__ == '__main__':
         print('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
             seed, learning_env_seed, test_env_seed))
         print('-------------------------------------------------\n')
-    # with tf.Session() as sess:
-    #     selected_actor_percentage = {i:0 for i in range(9)}
-    #     ensembled_test_on_env(sess, ['models/{0}/{1}/model_actor'.format(env_id, i) for i in range(8)])
-    #     print('Actor\'s selection percentages:')
-    #     s = sum(selected_actor_percentage.values())
-    #     p = {k: round(v*100/s, ndigits=2) for k, v in selected_actor_percentage.items()}
-    #     print(p)
