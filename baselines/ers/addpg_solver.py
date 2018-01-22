@@ -481,28 +481,33 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             g = (1 - d) * gamma
 
             a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
-            _, old_v_s, old_max_A, __ = actor.get_target_a_V_A_Q(s)
-            # nomrally: A(s,a) = r + gamma * max[_Q(s_next, _)] - _V(s)
-            # double Q: A(s,a) = r + gamma * _Q(s_next, argmax[Q(s_next, _)]) - _V(s)
-            adv_s_a = old_max_A + r + g * _V(s_next) - old_v_s
+            # _, old_v_s, old_max_A, __ = actor.get_target_a_V_A_Q(s)
+            # # nomrally: A(s,a) = r + gamma * max[_Q(s_next, _)] - _V(s)
+            # # double Q: A(s,a) = r + gamma * _Q(s_next, argmax[Q(s_next, _)]) - _V(s)
+            # adv_s_a = old_max_A + r + g * _V(s_next) - old_v_s
+            # _, A_mse = actor.train_A(s, adv_s_a, actions=a)
+
+            # # V(s) = max(_Q(s, _))
+            # # v_s_target = _max_Q(s)
+            # v_s = old_v_s + max_A_cur - old_max_A
+            # _, V_mse = actor.train_V(s, v_s)
+
+            # # normalize A:
+            # mb_adv = A(s, a)
+            # adv_s_a = mb_adv - old_max_A
+            # _, _ = actor.train_A(s, adv_s_a, actions=a)
+
+            adv_s_a = r + g * _V(s_next) - _V(s)
             _, A_mse = actor.train_A(s, adv_s_a, actions=a)
-
-            # V(s) = max(_Q(s, _))
-            # v_s_target = _max_Q(s)
-            v_s = old_v_s + max_A_cur - old_max_A
+            v_s = _max_Q(s)
             _, V_mse = actor.train_V(s, v_s)
-
-            # normalize A:
-            adv_s_a = A(s, a) - old_max_A
-            _, _ = actor.train_A(s, adv_s_a, actions=a)
 
             actor.soft_update_target_networks()
 
         _, av_A = actor.train_a(s)
-
         if f % 100 == 0:
             print('V_mse: {0}\tAv_V: {1}\tA_mse: {2}\tAv_A: {3}'.format(
-                V_mse, np.average(v_s_cur), A_mse, av_A))
+                V_mse, np.average(v_s), A_mse, np.average(adv_s_a)))
 
     def act(obs):
         if no_explore:
