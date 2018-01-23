@@ -1,7 +1,7 @@
 """
 dualing network style advantageous DDPG
 """
-
+from collections import deque
 import os
 import os.path
 import sys
@@ -385,9 +385,13 @@ class DiscreteToContinousWrapper(gym.Wrapper):
 class ERSEnvWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
+        self.k = 3
+        self.request_heat_maps = deque([], maxlen=self.k)
         self.n_ambs = 24
         self.n_bases = env.action_space.shape[0]
         self.action_space = gym.spaces.Box(0, 1, shape=[self.n_bases])
+        self.observation_space = gym.spaces.Box(
+            0, 1, shape=[self.k * self.n_bases + self.n_bases + 2])
 
     def compute_alloc(self, action):
         action = np.clip(action, 0, 1)
@@ -402,13 +406,24 @@ class ERSEnvWrapper(gym.Wrapper):
         # assert sum(alloc) == 1, "sum is {0}".format(sum(alloc))
         return alloc
 
+    def _reset(self):
+        """Clear buffer and re-fill by duplicating the first observation."""
+        self.obs = self.env.reset()
+        for _ in range(self.k):
+            self.request_heat_maps.append(self.obs[0:self.n_bases])
+        return self._observation()
+
     def step(self, action):
         # action = self.compute_alloc(action)
         print(np.round(self.n_ambs * action, decimals=2))
-        obs, r, d, _ = super().step(action)
-        # assert list(obs.shape) == [21, 21, 21]
+        self.obs, r, d, _ = super().step(action)
+        self.request_heat_maps.append(self.obs[0:self.n_bases])
         r = r / 200
-        return obs, r, d, _
+        return self._observation(), r, d, _
+
+    def _observation(self):
+        assert len(self.request_heat_maps) == self.k
+        return np.concatenate((np.concatenate(self.request_heat_maps, axis=0), self.obs[self.n_bases:]), axis=0)
 
 
 def normalize(a):
@@ -485,35 +500,17 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
                 e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
             g = (1 - d) * gamma
 
-            # a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
-            # _, old_v_s, old_max_A, __ = actor.get_target_a_V_A_Q(s)
-            # # nomrally: A(s,a) = r + gamma * max[_Q(s_next, _)] - _V(s)
-            # # double Q: A(s,a) = r + gamma * _Q(s_next, argmax[Q(s_next, _)]) - _V(s)
-            # adv_s_a = old_max_A + r + g * _V(s_next) - old_v_s
-            # _, A_mse = actor.train_A(s, adv_s_a, actions=a)
-
-            # # V(s) = max(_Q(s, _))
-            # # v_s_target = _max_Q(s)
-            # v_s = old_v_s + max_A_cur - old_max_A
-            # _, V_mse = actor.train_V(s, v_s)
-
-            # # normalize A:
-            # mb_adv = A(s, a)
-            # adv_s_a = mb_adv - old_max_A
-            # _, _ = actor.train_A(s, adv_s_a, actions=a)
+            # Single Q learning:
 
             old_a, old_v_s, old_max_A, old_max_Q = actor.get_target_a_V_A_Q(s)
             old_a_next, old_v_s_next, old_max_A_next, old_max_Q_s_next = actor.get_target_a_V_A_Q(
                 s_next)
             adv_s_a = r + g * old_max_Q_s_next - old_max_Q
-            # adv_s_a = np.clip(adv_s_a, -0.1, 0.1)
             _, A_mse = actor.train_A(s, adv_s_a, actions=a)
             v_s = old_max_Q
-            # v_s_cur = V(s)
-            # clipped_target = v_s_cur + np.clip(v_s - v_s_cur, -0.1, 0.1)
             _, V_mse = actor.train_V(s, v_s)
-            # adv_s_a = np.clip(_A(s, a) - old_max_A, -1, 1)
-            # _, _ = actor.train_A(s, adv_s_a, actions=a)
+
+            # double Q learning:
 
             actor.soft_update_target_networks()
 
