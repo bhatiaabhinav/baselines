@@ -405,7 +405,7 @@ class ERSEnvWrapper(gym.Wrapper):
         # action = self.compute_alloc(action)
         print(np.round(self.n_ambs * action, decimals=2))
         obs, r, d, _ = super().step(action)
-        assert list(obs.shape) == [21, 21, 21]
+        # assert list(obs.shape) == [21, 21, 21]
         r = r / 200
         return obs, r, d, _
 
@@ -528,7 +528,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         env = W(env)  # type: gym.Wrapper
     if actor is None:
         actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape,
-                      ob_dtype=ob_dtype, q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
+                      ob_dtype=ob_dtype, q_lr=7e-5, a_lr=7e-6, use_layer_norm=use_layer_norm, tau=tau)
         sess.run(tf.global_variables_initializer())
     actor.update_target_networks()
     if load_path:

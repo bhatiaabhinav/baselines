@@ -106,11 +106,13 @@ class Actor:
                         # the advantage network:
                         s_a_concat = tf.concat([s, a], axis=-1)
                         A_h1 = fc(s_a_concat, 'A_h1', nh=nn_size[1])
-                        A = fc(A_h1, 'A', 1, act=lambda x: x,
+                        A_h2 = fc(A_h1, 'A_h2', nh=nn_size[2])
+                        A = fc(A_h2, 'A', 1, act=lambda x: x,
                                init_scale=init_scale)[:, 0]
                         # the value network:
                         V_h1 = fc(s, 'V_h1', nh=nn_size[1])
-                        V = fc(V_h1, 'V', 1, act=lambda x: x,
+                        V_h2 = fc(V_h1, 'V_h2', nh=nn_size[2])
+                        V = fc(V_h2, 'V', 1, act=lambda x: x,
                                init_scale=init_scale)[:, 0]
                         # q:
                         Q = V + A
@@ -404,7 +406,7 @@ class ERSEnvWrapper(gym.Wrapper):
         # action = self.compute_alloc(action)
         print(np.round(self.n_ambs * action, decimals=2))
         obs, r, d, _ = super().step(action)
-        assert list(obs.shape) == [21, 21, 21]
+        # assert list(obs.shape) == [21, 21, 21]
         r = r / 200
         return obs, r, d, _
 
@@ -423,7 +425,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         env = W(env)  # type: gym.Wrapper
     if actor is None:
         actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape,
-                      ob_dtype=ob_dtype, q_lr=1e-3, a_lr=1e-4, use_layer_norm=use_layer_norm, tau=tau)
+                      ob_dtype=ob_dtype, q_lr=7e-5, a_lr=7e-6, use_layer_norm=use_layer_norm, tau=tau)
         sess.run(tf.global_variables_initializer())
     actor.update_target_networks()
     if load_path:
@@ -462,6 +464,9 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     def _max_Q(s):
         return actor.get_target_a_V_A_Q(s)[3]
 
+    def _A(s, a):
+        return actor.get_target_V_A_Q(s, a)[1]
+
     def _max_A(s):
         return actor.get_target_a_V_A_Q(s)[2]
 
@@ -480,7 +485,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
                 e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
             g = (1 - d) * gamma
 
-            a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
+            # a_s_cur, v_s_cur, max_A_cur, max_Q_cur = actor.get_a_V_A_Q(s)
             # _, old_v_s, old_max_A, __ = actor.get_target_a_V_A_Q(s)
             # # nomrally: A(s,a) = r + gamma * max[_Q(s_next, _)] - _V(s)
             # # double Q: A(s,a) = r + gamma * _Q(s_next, argmax[Q(s_next, _)]) - _V(s)
@@ -497,10 +502,18 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             # adv_s_a = mb_adv - old_max_A
             # _, _ = actor.train_A(s, adv_s_a, actions=a)
 
-            adv_s_a = r + g * _V(s_next) - _V(s)
+            old_a, old_v_s, old_max_A, old_max_Q = actor.get_target_a_V_A_Q(s)
+            old_a_next, old_v_s_next, old_max_A_next, old_max_Q_s_next = actor.get_target_a_V_A_Q(
+                s_next)
+            adv_s_a = r + g * old_max_Q_s_next - old_max_Q
+            # adv_s_a = np.clip(adv_s_a, -0.1, 0.1)
             _, A_mse = actor.train_A(s, adv_s_a, actions=a)
-            v_s = _max_Q(s)
+            v_s = old_max_Q
+            # v_s_cur = V(s)
+            # clipped_target = v_s_cur + np.clip(v_s - v_s_cur, -0.1, 0.1)
             _, V_mse = actor.train_V(s, v_s)
+            # adv_s_a = np.clip(_A(s, a) - old_max_A, -1, 1)
+            # _, _ = actor.train_A(s, adv_s_a, actions=a)
 
             actor.soft_update_target_networks()
 
