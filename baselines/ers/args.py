@@ -1,11 +1,32 @@
+import argparse
 import ast
 import os
 import os.path
+
+import numpy as np
+
 from baselines import logger
 
 
+def str2bool(v):
+    if v is True or v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v is False or v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def str2level(v):
+    return getattr(logger, v)
+
+
+def literal(v):
+    return ast.literal_eval(v)
+
+
 def parse():
-    import argparse
+
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--env', help='environment ID',
@@ -34,32 +55,38 @@ def parse():
     parser.add_argument(
         '--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default=None)
     parser.add_argument(
-        '--render', help='whether or not to render the env. False by default', type=bool, default=False)
+        '--render', help='whether or not to render the env. False by default', type=str2bool, default=False)
     parser.add_argument(
-        '--no_training', help='whether to just play without training', type=bool, default=False)
+        '--no_training', help='whether to just play without training', type=str2bool, default=False)
     parser.add_argument('--mb_size', type=int, default=64)
-    parser.add_argument('--tau', type=float, default=0.001)
+    parser.add_argument('--tau', type=float, default=0.0004)
+    parser.add_argument('--hard_update_target', type=str2bool, default=False)
     parser.add_argument('--gamma', type=float, default=0.99)
+    parser.add_argument('--double_Q_learning', type=str2bool, default=False)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--a_lr', type=float, default=5e-5)
     parser.add_argument('--exploration_episodes', type=int, default=100)
     parser.add_argument('--exploration_sigma', type=float, default=0.2)
     parser.add_argument('--pre_training_steps', type=int, default=1000)
     parser.add_argument('--training_episodes', type=int, default=5000)
     parser.add_argument('--run_no_prefix', default='run')
     parser.add_argument('--replay_memory_gigabytes', type=float, default=2.0)
-    parser.add_argument('--use_layer_norm', type=bool, default=True)
+    parser.add_argument('--use_layer_norm', type=str2bool, default=True)
     parser.add_argument('--init_scale', type=float, default=0.0001)
-    parser.add_argument('--nn_size', default="[400,300,200]")
+    parser.add_argument('--nn_size', type=literal, default="[400,300,200]")
     parser.add_argument('--generations', type=int, default=1000)
     parser.add_argument('--population_size', type=int, default=50)
     parser.add_argument('--truncation_size', type=int, default=10)
     parser.add_argument('--mutation_sigma', type=float, default=0.02)
-    parser.add_argument('--test_mode', type=bool, default=False)
+    parser.add_argument('--test_mode', type=str2bool, default=False)
     parser.add_argument('--test_episodes', type=int, default=100)
     parser.add_argument('--test_seed', type=int, default=42)
+    parser.add_argument('--print_precision', type=int, default=2)
+    parser.add_argument('--logger_level', type=str2level, default='INFO')
 
     args = parser.parse_args()
 
-    args.nn_size = ast.literal_eval(args.nn_size)
+    np.set_printoptions(precision=args.print_precision, linewidth=200)
 
     if args.logdir:
         for run_no in range(int(1e6)):
@@ -72,5 +99,9 @@ def parse():
                 break
             else:
                 run_no += 1
+
+    logger.set_level(args.logger_level)
+    logger.log(str(args))
+    logger.log('--------------------------------------\n')
 
     return args

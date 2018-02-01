@@ -5,14 +5,16 @@ from collections import deque
 import os
 import os.path
 import sys
-from typing import List
+from typing import List  # noqa: F401
 
 import gym
 import joblib
 import numpy as np
 import tensorflow as tf
+import tensorflow.contrib as tc
 
-import gym_ERSLE
+import gym_ERSLE  # noqa: F401
+from baselines import logger
 from baselines.a2c.utils import conv, conv_to_fc, fc
 from baselines.common.atari_wrappers import FrameStack, EpisodicLifeEnv,\
     NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame, SkipAndFrameStack,\
@@ -27,6 +29,48 @@ class Actor:
         self.name = name
         self.ac_shape = ac_shape
         self.tau = tau
+
+        def conv_layers(inputs, inputs_shape, scope):
+            with tf.variable_scope(scope):
+                if inputs_shape[0] >= 60:
+                    c1 = conv(inputs, 'c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
+                c2 = conv(c1 if inputs_shape[0] >= 60 else inputs, 'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
+                c3 = conv(c2, 'c3', nf=64, rf=3, stride=1, init_scale=np.sqrt(2))
+                flat = conv_to_fc(c3)
+            return flat
+
+        def hidden_layers(inputs, scope, size):
+            with tf.variable_scope(scope):
+                for i in range(len(size)):
+                    with tf.variable_scope('h{0}'.format(i + 1)):
+                        h = fc(inputs, 'fc', size[i], act=lambda x: x)
+                        if use_layer_norm:
+                            h = tc.layers.layer_norm(h, center=True, scale=True)
+                        h = tf.nn.relu(h, name='relu')
+                        inputs = h
+            return inputs
+
+        def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, output_size=None):
+            conv_needed = len(inputs_shape) > 1
+            with tf.variable_scope(scope):
+                if conv_needed:
+                    inp = tf.cast(inputs, tf.float32, name='cast_to_float') / 255. \
+                        if inputs_dtype == 'uint8' else inputs
+                    flat = conv_layers(inp, inputs_shape, 'conv_layers')
+                else:
+                    flat = inputs
+                h = hidden_layers(flat, 'hidden_layers', hidden_size)
+                if output_size is not None:
+                    final = fc(h, 'output_layer', nh=output_size, act=lambda x: x, init_scale=init_scale)
+                else:
+                    final = h
+                return final
+
+        def safe_softmax(inputs, scope):
+            with tf.variable_scope(scope):
+                exp = tf.exp(inputs - tf.reduce_max(inputs, axis=-1, keep_dims=True, name='max'))
+                return exp / tf.reduce_sum(exp, axis=-1, keep_dims=True, name='sum')
+
         with tf.variable_scope(name):
             for scope in ['original', 'target']:
                 with tf.variable_scope(scope):
@@ -36,42 +80,12 @@ class Actor:
                         self.states_feed_target = states_feed
                     else:
                         self.states_feed = states_feed
-                    with tf.variable_scope('a'):
-                        # conv layers go here
-                        if len(ob_shape) > 1:
-                            inp = tf.cast(states_feed, tf.float32) / 255.
-                            if ob_shape[0] >= 60:
-                                a_c1 = conv(inp, 'a_c1',
-                                            nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
-                            a_c2 = conv(a_c1 if ob_shape[0] >= 60 else inp, 'a_c2',
-                                        nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
-                            a_c3 = conv(a_c2, 'a_c3', nf=64, rf=3,
-                                        stride=1, init_scale=np.sqrt(2))
-                            states_flat = conv_to_fc(a_c3)
-                        else:
-                            states_flat = states_feed
-                        a_h1 = fc(states_flat, 'a_h1',
-                                  nh=nn_size[0], act=lambda x: x)
-                        if use_layer_norm:
-                            a_h1 = tf.layers.batch_normalization(a_h1)
-                        a_h1 = tf.nn.relu(a_h1)
-                        a_h2 = fc(a_h1, 'a_h2', nh=nn_size[1], act=lambda x: x)
-                        if use_layer_norm:
-                            a_h2 = tf.layers.batch_normalization(a_h2)
-                        a_h2 = tf.nn.relu(a_h2)
-                        if 'ERS' in env_id:
-                            a = fc(a_h2, 'a', nh=ac_shape[0],
-                                   act=lambda x: x, init_scale=init_scale)
-                            exp = tf.exp(
-                                a - tf.reduce_max(a, axis=-1, keep_dims=True))
-                            a = exp / \
-                                tf.reduce_sum(exp, axis=-1, keep_dims=True)
-                        else:
-                            a = fc(
-                                a_h2, 'a', nh=ac_shape[0], act=tf.nn.tanh, init_scale=init_scale)
-                        use_actions_feed = tf.placeholder(dtype=tf.bool)
+                    with tf.variable_scope('actor'):
+                        a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network', nn_size[0:2], ac_shape[0])
+                        a = safe_softmax(a, 'softmax') if 'ERS' in env_id else tf.nn.tanh(a, 'tanh')
+                        use_actions_feed = tf.placeholder(dtype=tf.bool, name='use_actions_feed')
                         actions_feed = tf.placeholder(
-                            dtype=tf.float32, shape=[None] + list(ac_shape))
+                            dtype=tf.float32, shape=[None] + list(ac_shape), name='actions_feed')
                         a = tf.case([
                             (use_actions_feed, lambda: actions_feed)
                         ], default=lambda: a)
@@ -83,86 +97,53 @@ class Actor:
                             self.a = a
                             self.actions_feed = actions_feed
                             self.use_actions_feed = use_actions_feed
-                    with tf.variable_scope('q'):
-                        # conv layers go here
-                        if len(ob_shape) > 1:
-                            inp = tf.cast(states_feed, tf.float32) / 255.
-                            if ob_shape[0] >= 60:
-                                s_c1 = conv(inp, 's_c1',
-                                            nf=32, rf=8, stride=4, init_scale=np.sqrt(2))
-                            s_c2 = conv(s_c1 if ob_shape[0] >= 60 else inp, 's_c2',
-                                        nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
-                            s_c3 = conv(s_c2, 's_c3', nf=64, rf=3,
-                                        stride=1, init_scale=np.sqrt(2))
-                            states_flat = conv_to_fc(s_c3)
-                        else:
-                            states_flat = states_feed
-                        s_h1 = fc(states_flat, 's_h1',
-                                  nh=nn_size[0], act=lambda x: x)
-                        if use_layer_norm:
-                            s_h1 = tf.layers.batch_normalization(s_h1)
-                        s_h1 = tf.nn.relu(s_h1)
-                        s = s_h1
-                        # the advantage network:
-                        s_a_concat = tf.concat([s, a], axis=-1)
-                        A_h1 = fc(s_a_concat, 'A_h1', nh=nn_size[1])
-                        A_h2 = fc(A_h1, 'A_h2', nh=nn_size[2])
-                        A = fc(A_h2, 'A', 1, act=lambda x: x,
-                               init_scale=init_scale)[:, 0]
-                        # the value network:
-                        V_h1 = fc(s, 'V_h1', nh=nn_size[1])
-                        V_h2 = fc(V_h1, 'V_h2', nh=nn_size[2])
-                        V = fc(V_h2, 'V', 1, act=lambda x: x,
-                               init_scale=init_scale)[:, 0]
-                        # q:
-                        Q = V + A
+                    with tf.variable_scope('critic'):
+                        with tf.variable_scope('A'):
+                            s = deep_net(states_feed, ob_shape, ob_dtype, 'one_hidden', nn_size[0:1])
+                            s_a_concat = tf.concat([s, a], axis=-1, name="s_a_concat")
+                            A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network', nn_size[1:], 1)[:, 0]
+                        V = deep_net(states_feed, ob_shape, ob_dtype, 'V', nn_size, 1)[:, 0]
+                        # Q:
+                        Q = tf.add(V, A, name='Q')
                         if scope == 'target':
                             self.V_target, self.A_target, self.Q_target = V, A, Q
                         else:
                             self.V, self.A, self.Q = V, A, Q
 
         # optimizers:
-        optimizer_q = tf.train.AdamOptimizer(learning_rate=q_lr)
-        optimizer_a = tf.train.AdamOptimizer(learning_rate=a_lr)
-
-        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        optimizer_q = tf.train.AdamOptimizer(learning_rate=q_lr, name='critic_adam')
+        optimizer_a = tf.train.AdamOptimizer(learning_rate=a_lr, name='actor_adam')
 
         # for training actions: maximize Advantage i.e. A
         self.a_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/a'.format(name))
+            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/actor'.format(name))
         self.av_A = tf.reduce_mean(self.A)
-        with tf.control_dependencies(update_ops):
-            a_grads = tf.gradients(-self.av_A, self.a_vars)
-            a_grads, norm = tf.clip_by_global_norm(a_grads, clip_norm=1)
-            self.train_a_op = optimizer_a.apply_gradients(
-                list(zip(a_grads, self.a_vars)))
-            # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
+        a_grads = tf.gradients(-self.av_A, self.a_vars)
+        a_grads, norm = tf.clip_by_global_norm(a_grads, clip_norm=1)
+        self.train_a_op = optimizer_a.apply_gradients(list(zip(a_grads, self.a_vars)))
+        # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
 
         # for training V:
         self.V_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/q'.format(name))
+            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/V'.format(name))
         self.V_target_feed = tf.placeholder(dtype='float32', shape=[None])
         se = tf.square(self.V - self.V_target_feed) / 2
         self.V_mse = tf.reduce_mean(se)
-        with tf.control_dependencies(update_ops):
-            V_grads = tf.gradients(self.V_mse, self.V_vars)
-            V_grads, norm = tf.clip_by_global_norm(V_grads, clip_norm=1)
-            self.train_V_op = optimizer_q.apply_gradients(
-                list(zip(V_grads, self.V_vars)))
-            # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
+        V_grads = tf.gradients(self.V_mse, self.V_vars)
+        V_grads, norm = tf.clip_by_global_norm(V_grads, clip_norm=1)
+        self.train_V_op = optimizer_q.apply_gradients(list(zip(V_grads, self.V_vars)))
+        # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
 
         # for training A:
         self.A_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/q'.format(name))
+            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/A'.format(name))
         self.A_target_feed = tf.placeholder(dtype='float32', shape=[None])
         se = tf.square(self.A - self.A_target_feed) / 2
         self.A_mse = tf.reduce_mean(se)
-        with tf.control_dependencies(update_ops):
-            A_grads = tf.gradients(self.A_mse, self.A_vars)
-            A_grads, norm = tf.clip_by_global_norm(A_grads, clip_norm=1)
-            self.train_A_op = optimizer_q.apply_gradients(
-                list(zip(A_grads, self.A_vars)))
-            # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
+        A_grads = tf.gradients(self.A_mse, self.A_vars)
+        A_grads, norm = tf.clip_by_global_norm(A_grads, clip_norm=1)
+        self.train_A_op = optimizer_q.apply_gradients(list(zip(A_grads, self.A_vars)))
+        # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
 
         # for updating target network:
         from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
@@ -188,21 +169,45 @@ class Actor:
 
         # for visualizing computation graph in tensorboard
         self.writer = tf.summary.FileWriter(
-            'summary/addpg', self.session.graph)
+            logger.get_dir(), self.session.graph)
+        # other summaries:
+        # while training V and A:
+        self.V_mse_summary = tf.summary.scalar('mb_V_mse', self.V_mse)
+        self.V_summary = tf.summary.histogram('mb_V', self.V_target_feed)
+        self.A_mse_summary = tf.summary.scalar('mb_A_mse', self.A_mse)
+        self.A_summary = tf.summary.histogram('mb_A', self.A_target_feed)
+        # while training a:
+        self.av_max_A_summary = tf.summary.scalar('mb_av_max_A', self.av_A)
+        # while playing:
+        self.frame_Q_summary = tf.summary.scalar('frame_Q', self.Q[0])
+        self.frame_A_summary = tf.summary.scalar('frame_A', self.A[0])
+        # score keeping:
+        self.R_placeholder = tf.placeholder(dtype=tf.float32)
+        self.R_summary = tf.summary.scalar(
+            'Reward_Per_Episode', self.R_placeholder)
+        self.R_exploit_placeholder = tf.placeholder(dtype=tf.float32)
+        self.R_exploit_summary = tf.summary.scalar(
+            'Av_Reward_Per_Episode_Exploit', self.R_exploit_placeholder)
+        self.score_summary = tf.summary.merge(
+            [self.R_summary, self.R_exploit_summary])
 
     def get_a_V_A_Q(self, states):
         ops, feed = self.get_a_V_A_Q_op_and_feed(states)
         return self.session.run(ops, feed_dict=feed)
 
     def get_a_V_A_Q_op_and_feed(self, states):
-        return [self.a, self.V, self.A, self.Q], {self.states_feed: states, self.use_actions_feed: False, self.actions_feed: [np.zeros(self.ac_shape)]}
+        return [self.a, self.V, self.A, self.Q, self.frame_A_summary, self.frame_Q_summary],\
+            {self.states_feed: states, self.use_actions_feed: False,
+                self.actions_feed: [np.zeros(self.ac_shape)]}
 
     def get_V_A_Q(self, states, actions):
         ops, feed = self.get_V_A_Q_op_and_feed(states, actions)
         return self.session.run(ops, feed_dict=feed)
 
     def get_V_A_Q_op_and_feed(self, states, actions):
-        return [self.V, self.A, self.Q], {self.states_feed: states, self.use_actions_feed: True, self.actions_feed: actions}
+        return [self.V, self.A, self.Q, self.frame_A_summary, self.frame_Q_summary],\
+            {self.states_feed: states, self.use_actions_feed: True,
+                self.actions_feed: actions}
 
     def train_V(self, states, target_V):
         ops, feed = self.get_train_V_op_and_feed(
@@ -210,7 +215,8 @@ class Actor:
         return self.session.run(ops, feed_dict=feed)
 
     def get_train_V_op_and_feed(self, states, target_V):
-        return [self.train_V_op, self.V_mse], {self.states_feed: states, self.V_target_feed: target_V}
+        return [self.train_V_op, self.V_mse, self.V_mse_summary, self.V_summary],\
+            {self.states_feed: states, self.V_target_feed: target_V}
 
     def train_A(self, states, target_A, actions=None):
         ops, feed = self.get_train_A_op_and_feed(
@@ -221,14 +227,18 @@ class Actor:
         use_actions_feed = actions is not None
         if actions is None:
             actions = [np.zeros(self.ac_shape)]
-        return [self.train_A_op, self.A_mse], {self.states_feed: states, self.use_actions_feed: use_actions_feed, self.actions_feed: actions, self.A_target_feed: target_A}
+        return [self.train_A_op, self.A_mse, self.A_mse_summary, self.A_summary],\
+            {self.states_feed: states, self.use_actions_feed: use_actions_feed,
+                self.actions_feed: actions, self.A_target_feed: target_A}
 
     def train_a(self, states):
         ops, feed = self.get_train_a_op_and_feed(states)
         return self.session.run(ops, feed_dict=feed)
 
     def get_train_a_op_and_feed(self, states):
-        return [self.train_a_op, self.av_A], {self.states_feed: states, self.use_actions_feed: False, self.actions_feed: [np.zeros(self.ac_shape)]}
+        return [self.train_a_op, self.av_A, self.av_max_A_summary],\
+            {self.states_feed: states, self.use_actions_feed: False,
+                self.actions_feed: [np.zeros(self.ac_shape)]}
 
     def get_target_a_V_A_Q(self, states):
         ops, feed = self.get_target_a_V_A_Q_op_and_feed(states)
@@ -307,7 +317,7 @@ class ExperienceBuffer:
             if self.size_in_bytes is not None:
                 self.buffer_length = int(
                     self.size_in_bytes / sys.getsizeof(exp))
-            print('Initializing experience buffer of length {0}'.format(
+            logger.log('Initializing experience buffer of length {0}'.format(
                 self.buffer_length))
             self.buffer = [None] * self.buffer_length
         self.buffer[self.next_index] = exp
@@ -391,7 +401,7 @@ class ERSEnvWrapper(gym.Wrapper):
         self.n_bases = env.action_space.shape[0]
         self.action_space = gym.spaces.Box(0, 1, shape=[self.n_bases])
         self.observation_space = gym.spaces.Box(
-            0, 1, shape=[self.k * self.n_bases + self.n_bases + 2])
+            0, 1, shape=[self.k * self.n_bases + self.n_bases + 1])
 
     def compute_alloc(self, action):
         action = np.clip(action, 0, 1)
@@ -415,7 +425,7 @@ class ERSEnvWrapper(gym.Wrapper):
 
     def step(self, action):
         # action = self.compute_alloc(action)
-        print(np.round(self.n_ambs * action, decimals=2))
+        logger.log('alloc: {0}'.format(np.round(action * self.n_ambs, 2)), level=logger.DEBUG)
         self.obs, r, d, _ = super().step(action)
         self.request_heat_maps.append(self.obs[0:self.n_bases])
         r = r / 200
@@ -423,7 +433,10 @@ class ERSEnvWrapper(gym.Wrapper):
 
     def _observation(self):
         assert len(self.request_heat_maps) == self.k
-        return np.concatenate((np.concatenate(self.request_heat_maps, axis=0), self.obs[self.n_bases:]), axis=0)
+        obs = np.concatenate((np.concatenate(
+            self.request_heat_maps, axis=0), self.obs[self.n_bases:]), axis=0)
+        logger.log('req_heat_map: {0}'.format(np.round(50 * self.obs[0:self.n_bases], 2)), level=logger.DEBUG)
+        return obs
 
 
 def normalize(a):
@@ -440,15 +453,15 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         env = W(env)  # type: gym.Wrapper
     if actor is None:
         actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape,
-                      ob_dtype=ob_dtype, q_lr=7e-5, a_lr=7e-6, use_layer_norm=use_layer_norm, tau=tau)
+                      ob_dtype=ob_dtype, q_lr=q_lr, a_lr=a_lr, use_layer_norm=use_layer_norm, tau=tau)
         sess.run(tf.global_variables_initializer())
     actor.update_target_networks()
     if load_path:
         try:
             actor.load(load_path)
-            print('model loaded')
+            logger.log('model loaded')
         except Exception as ex:
-            print('Failed to load model. Reason = {0}'.format(ex))
+            logger.log('Failed to load model. Reason = {0}'.format(ex), level=logger.ERROR)
     if learning:
         experience_buffer = ExperienceBuffer(
             size_in_bytes=replay_memory_size_in_bytes)
@@ -498,35 +511,55 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
                 count=minibatch_size))  # type: List[Experience]
             s, a, s_next, r, d = [e.state for e in mb], [e.action for e in mb], [
                 e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
-            g = (1 - d) * gamma
+            ɣ = (1 - d) * gamma
 
-            # Single Q learning:
+            if not double_Q_learning:
+                # Single Q learning:
+                # A(s,a) <- r + ɣ * max[_Q(s_next, _)] - max[_Q(s, _)]
+                # V(s) <- max[_Q(s, _)]
+                old_max_Q_s = _max_Q(s)
+                old_max_Q_s1 = _max_Q(s_next)
+                adv_s_a = r + ɣ * old_max_Q_s1 - old_max_Q_s
+                v_s = old_max_Q_s
+            else:
+                # Double Q learning:
+                # A(s,a) <- r + ɣ * _Q(s_next, argmax[Q(s_next, _)]) - _Q(s, argmax(s, _))
+                # V(s) <- _Q(s, argmax[Q(s, _)])
+                old_Q_s1_argmax_Q_s1 = _Q(s_next, argmax_Q(s_next))
+                old_Q_s_argmax_Q_s = _Q(s, argmax_Q(s))
+                adv_s_a = r + ɣ * old_Q_s1_argmax_Q_s1 - old_Q_s_argmax_Q_s
+                v_s = old_Q_s_argmax_Q_s
 
-            old_a, old_v_s, old_max_A, old_max_Q = actor.get_target_a_V_A_Q(s)
-            old_a_next, old_v_s_next, old_max_A_next, old_max_Q_s_next = actor.get_target_a_V_A_Q(
-                s_next)
-            adv_s_a = r + g * old_max_Q_s_next - old_max_Q
-            _, A_mse = actor.train_A(s, adv_s_a, actions=a)
-            v_s = old_max_Q
-            _, V_mse = actor.train_V(s, v_s)
+            _, A_mse, A_mse_summary, A_summary = actor.train_A(
+                s, adv_s_a, actions=a)
+            _, V_mse, V_mse_summary, V_summary = actor.train_V(s, v_s)
+            _, av_max_A, av_max_A_summary = actor.train_a(s)
 
-            # double Q learning:
-
+        if hard_update_target:
+            if f % int(4 / tau) == 0:  # every 4/tau steps
+                actor.update_target_networks()
+        else:
             actor.soft_update_target_networks()
 
-        _, av_A = actor.train_a(s)
         if f % 100 == 0:
-            print('V_mse: {0}\tAv_V: {1}\tA_mse: {2}\tAv_A: {3}'.format(
-                V_mse, np.average(v_s), A_mse, np.average(adv_s_a)))
+            logger.log('mb_V_mse: {0}\tmb_Av_V: {1}\tmb_A_mse: {2}\tmb_Av_A: {3}\tmb_Av_max_A: {4}'.format(
+                V_mse, np.average(v_s), A_mse, np.average(adv_s_a), av_max_A))
+            actor.writer.add_summary(A_mse_summary, f)
+            actor.writer.add_summary(A_summary, f)
+            actor.writer.add_summary(V_mse_summary, f)
+            actor.writer.add_summary(V_summary, f)
+            actor.writer.add_summary(av_max_A_summary, f)
 
     def act(obs):
-        if no_explore:
-            return actor.get_a_V_A_Q([obs])[0][0]
-        else:
-            a, value, adv, q = actor.get_a_V_A_Q([obs])
-            a, value, adv, q = a[0], value[0], adv[0], q[0]
-        a += noise()
-        a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
+        a, value, adv, q, A_summary, Q_summary = actor.get_a_V_A_Q([obs])
+        a, value, adv, q = a[0], value[0], adv[0], q[0]
+        if not no_explore:
+            a += noise()
+            a = normalize(a) if 'ERS' in env_id else np.clip(a, -1, 1)
+        logger.log('ep_f: {0}\tA: {1}\tQ: {2}'.format(ep_l, adv, q), level=logger.DEBUG)
+        if f % 10 == 0:
+            actor.writer.add_summary(A_summary, f)
+            actor.writer.add_summary(Q_summary, f)
         return a
     Rs, no_explore_Rs, f = [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
@@ -554,16 +587,17 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             no_explore_Rs.append(R)
         av = np.average(Rs[-100:])
         no_explore_av = np.average(no_explore_Rs[-100:])
-        print('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}\tExploit_Av_R: {4}{5}'.format(
+        logger.log('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}\tExploit_Av_R: {4}{5}'.format(
             ep, R, ep_l, av, no_explore_av, "\t(exploited)" if no_explore else ""))
+        score_summary = actor.score_summary.eval(
+            feed_dict={actor.R_placeholder: Rs[-1], actor.R_exploit_placeholder: no_explore_Rs[-1]})
+        actor.writer.add_summary(score_summary, ep)
         if save_path and ep % 50 == 0:
             actor.save(save_path)
-            print('model saved')
-        if learning and env_id == 'CartPole-v1' and av > 490:
-            break
+            logger.log('model saved')
     env.close()
-    print('Average reward per episode: {0}'.format(np.average(Rs)))
-    print('Exploitation average reward per episode: {0}'.format(
+    logger.log('Average reward per episode: {0}'.format(np.average(Rs)))
+    logger.log('Exploitation average reward per episode: {0}'.format(
         np.average(no_explore_Rs)))
     return actor
 
@@ -573,14 +607,18 @@ if __name__ == '__main__':
     from baselines.ers.args import parse
     args = parse()
     env_id = args.env
-    print('env_id: ' + env_id)
+    logger.log('env_id: ' + env_id)
     seed = args.seed
-    print('Seed: {0}'.format(seed))
+    logger.log('Seed: {0}'.format(seed))
     np.random.seed(seed)
     ob_dtype = args.ob_dtype
     minibatch_size = args.mb_size
     tau = args.tau
+    hard_update_target = args.hard_update_target
     gamma = args.gamma
+    q_lr = args.a_lr
+    a_lr = args.a_lr
+    double_Q_learning = args.double_Q_learning
     exploration_episodes = args.exploration_episodes
     pre_training_steps = args.pre_training_steps
     replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
@@ -594,8 +632,8 @@ if __name__ == '__main__':
     nn_size = args.nn_size
     init_scale = args.init_scale
     render = args.render
-    save_path = 'models/{0}/{1}/model'.format(env_id, seed)
-    load_path = save_path
+    save_path = os.path.join(logger.get_dir(), "model")
+    load_path = args.saved_model
     if 'ERSEnv-ca' in env_id:
         ob_dtype = args.ob_dtype
         wrappers = [ERSEnvWrapper]
@@ -610,13 +648,13 @@ if __name__ == '__main__':
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame,
                     SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
     with tf.Session() as sess:
-        print('Training actor. seed={0}. learning_env_seed={1}'.format(
+        logger.log('Training actor. seed={0}. learning_env_seed={1}'.format(
             seed, learning_env_seed))
         actor = test_actor_on_env(
             sess, True, save_path=save_path, load_path=load_path)
         actor.save(save_path)
-        print('Testing actor. test_env_seed={0}'.format(test_env_seed))
+        logger.log('Testing actor. test_env_seed={0}'.format(test_env_seed))
         test_actor_on_env(sess, False, actor=actor)
-        print('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
+        logger.log('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
             seed, learning_env_seed, test_env_seed))
-        print('-------------------------------------------------\n')
+        logger.log('-------------------------------------------------\n')
