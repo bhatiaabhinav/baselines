@@ -237,7 +237,7 @@ class Logger(object):
 
     def log(self, *args, level=INFO):
         if self.level <= level:
-            self._do_log(args)
+            self._do_log(args, level)
 
     # Configuration
     # ----------------------------------------
@@ -253,8 +253,11 @@ class Logger(object):
 
     # Misc
     # ----------------------------------------
-    def _do_log(self, args):
+    def _do_log(self, args, level=INFO):
         for fmt in self.output_formats:
+            if isinstance(fmt, HumanOutputFormat) and fmt.file == sys.stdout and level < INFO:
+                # dont want to log debug statements to stdout
+                continue
             fmt.writeseq(args)
 
 Logger.DEFAULT = Logger.CURRENT = Logger(dir=None, output_formats=[HumanOutputFormat(sys.stdout)])
