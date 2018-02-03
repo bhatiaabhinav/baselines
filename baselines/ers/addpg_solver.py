@@ -39,18 +39,20 @@ class Actor:
                 flat = conv_to_fc(c3)
             return flat
 
-        def hidden_layers(inputs, scope, size):
+        def hidden_layers(inputs, scope, size, training=False):
             with tf.variable_scope(scope):
                 for i in range(len(size)):
                     with tf.variable_scope('h{0}'.format(i + 1)):
                         h = fc(inputs, 'fc', size[i], act=lambda x: x)
                         if use_layer_norm:
-                            h = tc.layers.layer_norm(h, center=True, scale=True)
+                            h = tc.layers.layer_norm(h, center=True, scale=True, name='layer_norm')
+                        elif use_batch_norm:
+                            h = tf.layers.batch_normalization(h, training=training, name='batch_norm')
                         h = tf.nn.relu(h, name='relu')
                         inputs = h
             return inputs
 
-        def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, output_size=None):
+        def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, training=False, output_size=None):
             conv_needed = len(inputs_shape) > 1
             with tf.variable_scope(scope):
                 if conv_needed:
@@ -59,7 +61,7 @@ class Actor:
                     flat = conv_layers(inp, inputs_shape, 'conv_layers')
                 else:
                     flat = inputs
-                h = hidden_layers(flat, 'hidden_layers', hidden_size)
+                h = hidden_layers(flat, 'hidden_layers', hidden_size, training=training)
                 if output_size is not None:
                     final = fc(h, 'output_layer', nh=output_size, act=lambda x: x, init_scale=init_scale)
                 else:
@@ -81,7 +83,8 @@ class Actor:
                     else:
                         self.states_feed = states_feed
                     with tf.variable_scope('actor'):
-                        a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network', nn_size[0:2], ac_shape[0])
+                        is_training_a = False if scope == 'target' else tf.placeholder(dtype=tf.bool, name='is_training_a')
+                        a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network', nn_size, training=is_training_a, output_size=ac_shape[0])
                         a = safe_softmax(a, 'softmax') if 'ERS' in env_id else tf.nn.tanh(a, 'tanh')
                         use_actions_feed = tf.placeholder(dtype=tf.bool, name='use_actions_feed')
                         actions_feed = tf.placeholder(
@@ -94,21 +97,24 @@ class Actor:
                             self.actions_feed_target = actions_feed
                             self.use_actions_feed_target = use_actions_feed
                         else:
+                            self.is_training_a = is_training_a
                             self.a = a
                             self.actions_feed = actions_feed
                             self.use_actions_feed = use_actions_feed
                     with tf.variable_scope('critic'):
                         with tf.variable_scope('A'):
-                            s = deep_net(states_feed, ob_shape, ob_dtype, 'one_hidden', nn_size[0:1])
+                            is_training_critic = False if scope == 'target' else tf.placeholder(dtype=tf.bool, name='is_training_critic')
+                            s = deep_net(states_feed, ob_shape, ob_dtype, 'one_hidden', nn_size[0:1], training=is_training_critic)
                             s_a_concat = tf.concat([s, a], axis=-1, name="s_a_concat")
-                            A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network', nn_size[1:], 1)[:, 0]
-                        V = deep_net(states_feed, ob_shape, ob_dtype, 'V', nn_size, 1)[:, 0]
+                            A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network', nn_size[1:], training=is_training_critic, output_size=1)[:, 0]
+                        V = deep_net(states_feed, ob_shape, ob_dtype, 'V', nn_size, training=is_training_critic, output_size=1)[:, 0]
                         # Q:
                         Q = tf.add(V, A, name='Q')
                         if scope == 'target':
                             self.V_target, self.A_target, self.Q_target = V, A, Q
                         else:
                             self.V, self.A, self.Q = V, A, Q
+                            self.is_training_critic = is_training_critic
 
         # optimizers:
         optimizer_q = tf.train.AdamOptimizer(learning_rate=q_lr, name='critic_adam')
@@ -118,10 +124,12 @@ class Actor:
         self.a_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/actor'.format(name))
         self.av_A = tf.reduce_mean(self.A)
-        a_grads = tf.gradients(-self.av_A, self.a_vars)
-        a_grads, norm = tf.clip_by_global_norm(a_grads, clip_norm=1)
-        self.train_a_op = optimizer_a.apply_gradients(list(zip(a_grads, self.a_vars)))
-        # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/original/actor'.format(name))
+        with tf.control_dependencies(update_ops):
+            a_grads = tf.gradients(-self.av_A, self.a_vars)
+            a_grads, norm = tf.clip_by_global_norm(a_grads, clip_norm=1)
+            self.train_a_op = optimizer_a.apply_gradients(list(zip(a_grads, self.a_vars)))
+            # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
 
         # for training V:
         self.V_vars = tf.get_collection(
@@ -129,10 +137,12 @@ class Actor:
         self.V_target_feed = tf.placeholder(dtype='float32', shape=[None])
         se = tf.square(self.V - self.V_target_feed) / 2
         self.V_mse = tf.reduce_mean(se)
-        V_grads = tf.gradients(self.V_mse, self.V_vars)
-        V_grads, norm = tf.clip_by_global_norm(V_grads, clip_norm=1)
-        self.train_V_op = optimizer_q.apply_gradients(list(zip(V_grads, self.V_vars)))
-        # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/V'.format(name))
+        with tf.control_dependencies(update_ops):
+            V_grads = tf.gradients(self.V_mse, self.V_vars)
+            V_grads, norm = tf.clip_by_global_norm(V_grads, clip_norm=1)
+            self.train_V_op = optimizer_q.apply_gradients(list(zip(V_grads, self.V_vars)))
+            # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
 
         # for training A:
         self.A_vars = tf.get_collection(
@@ -140,16 +150,18 @@ class Actor:
         self.A_target_feed = tf.placeholder(dtype='float32', shape=[None])
         se = tf.square(self.A - self.A_target_feed) / 2
         self.A_mse = tf.reduce_mean(se)
-        A_grads = tf.gradients(self.A_mse, self.A_vars)
-        A_grads, norm = tf.clip_by_global_norm(A_grads, clip_norm=1)
-        self.train_A_op = optimizer_q.apply_gradients(list(zip(A_grads, self.A_vars)))
-        # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
-
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/A'.format(name))
+        with tf.control_dependencies(update_ops):
+            A_grads = tf.gradients(self.A_mse, self.A_vars)
+            A_grads, norm = tf.clip_by_global_norm(A_grads, clip_norm=1)
+            self.train_A_op = optimizer_q.apply_gradients(list(zip(A_grads, self.A_vars)))
+            # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
+        
         # for updating target network:
-        from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+        from_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
                                       '{0}/original'.format(name))
         to_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/target'.format(name))
+            tf.GraphKeys.GLOBAL_VARIABLES, '{0}/target'.format(name))
         self.update_target_network_op, self.soft_update_target_network_op = [], []
         for from_var, to_var in zip(from_vars, to_vars):
             self.update_target_network_op.append(to_var.assign(from_var))
@@ -158,7 +170,7 @@ class Actor:
 
         # for saving and loading
         self.params = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, '{0}'.format(name))
+            tf.GraphKeys.GLOBAL_VARIABLES, '{0}/original'.format(name))
         self.load_placeholders = []
         self.load_ops = []
         for p in self.params:
@@ -198,7 +210,8 @@ class Actor:
     def get_a_V_A_Q_op_and_feed(self, states):
         return [self.a, self.V, self.A, self.Q, self.frame_A_summary, self.frame_Q_summary],\
             {self.states_feed: states, self.use_actions_feed: False,
-                self.actions_feed: [np.zeros(self.ac_shape)]}
+                self.actions_feed: [np.zeros(self.ac_shape)],
+                self.is_training_a: False, self.is_training_critic: False}
 
     def get_V_A_Q(self, states, actions):
         ops, feed = self.get_V_A_Q_op_and_feed(states, actions)
@@ -207,7 +220,8 @@ class Actor:
     def get_V_A_Q_op_and_feed(self, states, actions):
         return [self.V, self.A, self.Q, self.frame_A_summary, self.frame_Q_summary],\
             {self.states_feed: states, self.use_actions_feed: True,
-                self.actions_feed: actions}
+                self.actions_feed: actions,
+                self.is_training_a: False, self.is_training_critic: False}
 
     def train_V(self, states, target_V):
         ops, feed = self.get_train_V_op_and_feed(
@@ -216,7 +230,8 @@ class Actor:
 
     def get_train_V_op_and_feed(self, states, target_V):
         return [self.train_V_op, self.V_mse, self.V_mse_summary, self.V_summary],\
-            {self.states_feed: states, self.V_target_feed: target_V}
+            {self.states_feed: states, self.V_target_feed: target_V,
+                self.is_training_critic: True}
 
     def train_A(self, states, target_A, actions=None):
         ops, feed = self.get_train_A_op_and_feed(
@@ -229,7 +244,8 @@ class Actor:
             actions = [np.zeros(self.ac_shape)]
         return [self.train_A_op, self.A_mse, self.A_mse_summary, self.A_summary],\
             {self.states_feed: states, self.use_actions_feed: use_actions_feed,
-                self.actions_feed: actions, self.A_target_feed: target_A}
+                self.actions_feed: actions, self.A_target_feed: target_A,
+                self.is_training_a: False, self.is_training_critic: True}
 
     def train_a(self, states):
         ops, feed = self.get_train_a_op_and_feed(states)
@@ -238,7 +254,8 @@ class Actor:
     def get_train_a_op_and_feed(self, states):
         return [self.train_a_op, self.av_A, self.av_max_A_summary],\
             {self.states_feed: states, self.use_actions_feed: False,
-                self.actions_feed: [np.zeros(self.ac_shape)]}
+                self.actions_feed: [np.zeros(self.ac_shape)],
+                self.is_training_a: True, self.is_training_critic: False}
 
     def get_target_a_V_A_Q(self, states):
         ops, feed = self.get_target_a_V_A_Q_op_and_feed(states)
@@ -325,8 +342,8 @@ class ExperienceBuffer:
         self.count = min(self.count + 1, self.buffer_length)
 
     def random_experiences(self, count):
-        indices = np.random.randint(0, self.count, size=count - 1)
-        yield self.buffer[(self.next_index - 1) % self.buffer_length]
+        indices = np.random.randint(0, self.count, size=count)
+        # yield self.buffer[(self.next_index - 1) % self.buffer_length]
         for i in indices:
             yield self.buffer[i]
 
@@ -455,13 +472,13 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
         actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape,
                       ob_dtype=ob_dtype, q_lr=q_lr, a_lr=a_lr, use_layer_norm=use_layer_norm, tau=tau)
         sess.run(tf.global_variables_initializer())
-    actor.update_target_networks()
     if load_path:
         try:
             actor.load(load_path)
             logger.log('model loaded')
         except Exception as ex:
             logger.log('Failed to load model. Reason = {0}'.format(ex), level=logger.ERROR)
+    actor.update_target_networks()
     if learning:
         experience_buffer = ExperienceBuffer(
             size_in_bytes=replay_memory_size_in_bytes)
@@ -533,7 +550,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             _, A_mse, A_mse_summary, A_summary = actor.train_A(
                 s, adv_s_a, actions=a)
             _, V_mse, V_mse_summary, V_summary = actor.train_V(s, v_s)
-            _, av_max_A, av_max_A_summary = actor.train_a(s)
+        _, av_max_A, av_max_A_summary = actor.train_a(s)
 
         if hard_update_target:
             if f % int(4 / tau) == 0:  # every 4/tau steps
@@ -629,6 +646,8 @@ if __name__ == '__main__':
     test_env_seed = args.test_seed
     test_episodes = args.test_episodes
     use_layer_norm = args.use_layer_norm
+    use_batch_norm = args.use_batch_norm
+    assert not (use_layer_norm and use_batch_norm), "Cannot use both layer norm and batch norm"
     nn_size = args.nn_size
     init_scale = args.init_scale
     render = args.render
