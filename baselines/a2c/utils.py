@@ -52,7 +52,7 @@ def fc(x, scope, nh, act=tf.nn.relu, init_scale=1.0):
     with tf.variable_scope(scope):
         nin = x.get_shape()[1].value
         w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
-        b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(0.0))
+        b = tf.get_variable("bias", [nh], initializer=tf.constant_initializer(0.0))
         z = tf.matmul(x, w)+b
         h = act(z)
         return h
