@@ -495,7 +495,7 @@ class ERSEnvWrapper(gym.Wrapper):
             np.round(action * self.n_ambs, 2)), level=logger.DEBUG)
         self.obs, r, d, _ = super().step(action)
         self.request_heat_maps.append(self.obs[0:self.n_bases])
-        r = r / 200
+        # r = r / 200
         return self._observation(), r, d, _
 
     def _observation(self):
@@ -669,8 +669,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             if learning:
                 experience_buffer.add(Experience(obs, a, r, d, _, obs_))
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
-        if 'ERS' in env_id:
-            R = 200 * R
+        # if 'ERS' in env_id:
+        #     R = 200 * R
         Rs.append(R)
         if no_explore:
             no_explore_Rs.append(R)
