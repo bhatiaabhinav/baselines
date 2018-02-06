@@ -21,7 +21,8 @@ class NoopResetEnv(gym.Wrapper):
         if self.override_num_noops is not None:
             noops = self.override_num_noops
         else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1)  # pylint: disable=E1101
+            noops = self.unwrapped.np_random.randint(
+                1, self.noop_max + 1)  # pylint: disable=E1101
         assert noops > 0
         obs = None
         for _ in range(noops):
@@ -166,24 +167,29 @@ class WarpFrame(gym.ObservationWrapper):
         """Warp frames to 84x84 as done in the Nature paper and later work."""
         gym.ObservationWrapper.__init__(self, env)
         self.res = 84
-        self.observation_space = spaces.Box(low=0, high=255, shape=(self.res, self.res, 1))
+        self.observation_space = spaces.Box(
+            low=0, high=255, shape=(self.res, self.res, 1))
 
     def _observation(self, obs):
-        frame = np.dot(obs.astype('float32'), np.array([0.299, 0.587, 0.114], 'float32'))
+        frame = np.dot(obs.astype('float32'), np.array(
+            [0.299, 0.587, 0.114], 'float32'))
         frame = np.array(Image.fromarray(frame).resize((self.res, self.res),
                                                        resample=Image.BILINEAR), dtype=np.uint8)
         return frame.reshape((self.res, self.res, 1))
 
 
 class FrameStack(gym.Wrapper):
+    k = 3
+
     def __init__(self, env, k=3):
         """Buffer observations and stack across channels (last axis)."""
         gym.Wrapper.__init__(self, env)
-        self.k = k
+        self.k = FrameStack.k
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
         # assert shp[2] == 1  # can only stack 1-channel frames
-        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], k * shp[2]))
+        self.observation_space = spaces.Box(
+            low=0, high=255, shape=(shp[0], shp[1], k * shp[2]))
 
     def _reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""
@@ -199,7 +205,9 @@ class FrameStack(gym.Wrapper):
 
     def _observation(self):
         assert len(self.frames) == self.k
-        return np.concatenate(self.frames, axis=2)
+        obs = np.concatenate(self.frames, axis=2)
+        assert list(np.shape(obs)) == list(self.observation_space.shape)
+        return obs
 
 
 class SkipAndFrameStack(gym.Wrapper):
@@ -211,7 +219,8 @@ class SkipAndFrameStack(gym.Wrapper):
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
         assert shp[2] == 1  # can only stack 1-channel frames
-        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], k))
+        self.observation_space = spaces.Box(
+            low=0, high=255, shape=(shp[0], shp[1], k))
 
     def _reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""

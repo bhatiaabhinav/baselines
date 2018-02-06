@@ -36,7 +36,7 @@ class Actor:
                     c1 = conv(inputs, 'c1', nf=32, rf=8,
                               stride=4, init_scale=np.sqrt(2))
                 c2 = conv(c1 if inputs_shape[0] >= 60 else inputs,
-                          'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2))
+                          'c2', nf=32, rf=4, stride=2, init_scale=np.sqrt(2))
                 c3 = conv(c2, 'c3', nf=64, rf=3,
                           stride=1, init_scale=np.sqrt(2))
                 flat = conv_to_fc(c3)
@@ -134,99 +134,111 @@ class Actor:
                             self.is_training_critic = is_training_critic
 
         # optimizers:
-        optimizer_q = tf.train.AdamOptimizer(
-            learning_rate=q_lr, name='critic_adam')
-        optimizer_a = tf.train.AdamOptimizer(
-            learning_rate=a_lr, name='actor_adam')
+        with tf.name_scope('optimizers'):
+            optimizer_A = tf.train.AdamOptimizer(
+                learning_rate=q_lr, name='A_adam')
+            optimizer_V = tf.train.AdamOptimizer(
+                learning_rate=q_lr, name='V_adam')
+            optimizer_a = tf.train.AdamOptimizer(
+                learning_rate=a_lr, name='actor_adam')
 
-        # for training actions: maximize Advantage i.e. A
-        self.a_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/actor'.format(name))
-        self.av_A = tf.reduce_mean(self.A)
-        l2_loss = 0
-        for var in self.a_vars:
-            if 'bias' not in var.name:
-                l2_loss += a_l2_reg * tf.nn.l2_loss(var)
-        loss = -self.av_A + l2_loss
-        update_ops = tf.get_collection(
-            tf.GraphKeys.UPDATE_OPS, scope='{0}/original/actor'.format(name))
-        with tf.control_dependencies(update_ops):
-            a_grads = tf.gradients(loss, self.a_vars)
-            if a_clip_norm is not None:
-                a_grads, norm = tf.clip_by_global_norm(
-                    a_grads, clip_norm=a_clip_norm)
-            self.train_a_op = optimizer_a.apply_gradients(
-                list(zip(a_grads, self.a_vars)))
-            # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
+        with tf.name_scope('optimize_actor'):
+            # for training actions: maximize Advantage i.e. A
+            self.a_vars = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/actor'.format(name))
+            self.av_A = tf.reduce_mean(self.A)
+            with tf.name_scope('L2_Losses'):
+                l2_loss = 0
+                for var in self.a_vars:
+                    if 'bias' not in var.name:
+                        l2_loss += a_l2_reg * tf.nn.l2_loss(var)
+            loss = -self.av_A + l2_loss
+            update_ops = tf.get_collection(
+                tf.GraphKeys.UPDATE_OPS, scope='{0}/original/actor'.format(name))
+            with tf.control_dependencies(update_ops):
+                a_grads = tf.gradients(loss, self.a_vars)
+                if a_clip_norm is not None:
+                    a_grads, norm = tf.clip_by_global_norm(
+                        a_grads, clip_norm=a_clip_norm)
+                self.train_a_op = optimizer_a.apply_gradients(
+                    list(zip(a_grads, self.a_vars)))
+                # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
 
-        # for training V:
-        self.V_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/V'.format(name))
-        self.V_target_feed = tf.placeholder(dtype='float32', shape=[None])
-        se = tf.square(self.V - self.V_target_feed) / 2
-        self.V_mse = tf.reduce_mean(se)
-        l2_loss = 0
-        for var in self.V_vars:
-            if 'bias' not in var.name:
-                l2_loss += l2_reg * tf.nn.l2_loss(var)
-        loss = self.V_mse + l2_loss
-        update_ops = tf.get_collection(
-            tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/V'.format(name))
-        with tf.control_dependencies(update_ops):
-            V_grads = tf.gradients(loss, self.V_vars)
-            if clip_norm is not None:
-                V_grads, norm = tf.clip_by_global_norm(
-                    V_grads, clip_norm=clip_norm)
-            self.train_V_op = optimizer_q.apply_gradients(
-                list(zip(V_grads, self.V_vars)))
-            # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
+        with tf.name_scope('optimize_V'):
+            # for training V:
+            self.V_vars = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/V'.format(name))
+            self.V_target_feed = tf.placeholder(dtype='float32', shape=[None])
+            se = tf.square(self.V - self.V_target_feed) / 2
+            self.V_mse = tf.reduce_mean(se)
+            with tf.name_scope('L2_Losses'):
+                l2_loss = 0
+                for var in self.V_vars:
+                    if 'bias' not in var.name:
+                        l2_loss += l2_reg * tf.nn.l2_loss(var)
+                loss = self.V_mse + l2_loss
+            update_ops = tf.get_collection(
+                tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/V'.format(name))
+            with tf.control_dependencies(update_ops):
+                V_grads = tf.gradients(loss, self.V_vars)
+                if clip_norm is not None:
+                    V_grads, norm = tf.clip_by_global_norm(
+                        V_grads, clip_norm=clip_norm)
+                self.train_V_op = optimizer_V.apply_gradients(
+                    list(zip(V_grads, self.V_vars)))
+                # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
 
-        # for training A:
-        self.A_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/A'.format(name))
-        self.A_target_feed = tf.placeholder(dtype='float32', shape=[None])
-        se = tf.square(self.A - self.A_target_feed) / 2
-        self.A_mse = tf.reduce_mean(se)
-        l2_loss = 0
-        for var in self.A_vars:
-            if 'bias' not in var.name:
-                l2_loss += l2_reg * tf.nn.l2_loss(var)
-        loss = self.A_mse + l2_loss
-        update_ops = tf.get_collection(
-            tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/A'.format(name))
-        with tf.control_dependencies(update_ops):
-            A_grads = tf.gradients(loss, self.A_vars)
-            if clip_norm is not None:
-                A_grads, norm = tf.clip_by_global_norm(
-                    A_grads, clip_norm=clip_norm)
-            self.train_A_op = optimizer_q.apply_gradients(
-                list(zip(A_grads, self.A_vars)))
-            # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
+        with tf.name_scope('optimize_A'):
+            # for training A:
+            self.A_vars = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/A'.format(name))
+            self.A_target_feed = tf.placeholder(dtype='float32', shape=[None])
+            se = tf.square(self.A - self.A_target_feed) / 2
+            self.A_mse = tf.reduce_mean(se)
+            with tf.name_scope('L2_Losses'):
+                l2_loss = 0
+                for var in self.A_vars:
+                    if 'bias' not in var.name:
+                        l2_loss += l2_reg * tf.nn.l2_loss(var)
+            loss = self.A_mse + l2_loss
+            update_ops = tf.get_collection(
+                tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/A'.format(name))
+            with tf.control_dependencies(update_ops):
+                A_grads = tf.gradients(loss, self.A_vars)
+                if clip_norm is not None:
+                    A_grads, norm = tf.clip_by_global_norm(
+                        A_grads, clip_norm=clip_norm)
+                self.train_A_op = optimizer_A.apply_gradients(
+                    list(zip(A_grads, self.A_vars)))
+                # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
 
-        # for updating target network:
-        from_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
-                                      '{0}/original'.format(name))
-        to_vars = tf.get_collection(
-            tf.GraphKeys.GLOBAL_VARIABLES, '{0}/target'.format(name))
-        self.update_target_network_op, self.soft_update_target_network_op = [], []
-        for from_var, to_var in zip(from_vars, to_vars):
-            hard_update_op = to_var.assign(from_var)
-            soft_update_op = to_var.assign(tau * from_var + (1 - tau) * to_var)
-            self.update_target_network_op.append(hard_update_op)
-            if 'batch_norm' in from_var.name:
-                soft_update_op = hard_update_op
-            self.soft_update_target_network_op.append(soft_update_op)
+        with tf.name_scope('target_network_update_ops'):
+            # for updating target network:
+            from_vars = tf.get_collection(
+                tf.GraphKeys.GLOBAL_VARIABLES, '{0}/original'.format(name))
+            to_vars = tf.get_collection(
+                tf.GraphKeys.GLOBAL_VARIABLES, '{0}/target'.format(name))
+            self.update_target_network_op, self.soft_update_target_network_op = [], []
+            for from_var, to_var in zip(from_vars, to_vars):
+                hard_update_op = to_var.assign(from_var)
+                soft_update_op = to_var.assign(
+                    tau * from_var + (1 - tau) * to_var)
+                self.update_target_network_op.append(hard_update_op)
+                if 'batch_norm' in from_var.name:
+                    soft_update_op = hard_update_op
+                self.soft_update_target_network_op.append(soft_update_op)
 
-        # for saving and loading
-        self.params = tf.get_collection(
-            tf.GraphKeys.GLOBAL_VARIABLES, '{0}/original'.format(name))
-        self.load_placeholders = []
-        self.load_ops = []
-        for p in self.params:
-            p_placeholder = tf.placeholder(
-                shape=p.shape.as_list(), dtype=tf.float32)
-            self.load_placeholders.append(p_placeholder)
-            self.load_ops.append(p.assign(p_placeholder))
+        with tf.name_scope('saving_loading_ops'):
+            # for saving and loading
+            self.params = tf.get_collection(
+                tf.GraphKeys.GLOBAL_VARIABLES, '{0}/original'.format(name))
+            self.load_placeholders = []
+            self.load_ops = []
+            for p in self.params:
+                p_placeholder = tf.placeholder(
+                    shape=p.shape.as_list(), dtype=tf.float32)
+                self.load_placeholders.append(p_placeholder)
+                self.load_ops.append(p.assign(p_placeholder))
 
         # for visualizing computation graph in tensorboard
         self.writer = tf.summary.FileWriter(
@@ -248,7 +260,7 @@ class Actor:
             'Reward_Per_Episode', self.R_placeholder)
         self.R_exploit_placeholder = tf.placeholder(dtype=tf.float32)
         self.R_exploit_summary = tf.summary.scalar(
-            'Av_Reward_Per_Episode_Exploit', self.R_exploit_placeholder)
+            'Reward_Per_Episode_Exploit', self.R_exploit_placeholder)
         self.score_summary = tf.summary.merge(
             [self.R_summary, self.R_exploit_summary])
 
@@ -459,9 +471,11 @@ class DiscreteToContinousWrapper(gym.Wrapper):
 
 
 class ERSEnvWrapper(gym.Wrapper):
+    k = 3
+
     def __init__(self, env):
         super().__init__(env)
-        self.k = 3
+        self.k = ERSEnvWrapper.k
         self.request_heat_maps = deque([], maxlen=self.k)
         self.n_ambs = 24
         self.n_bases = env.action_space.shape[0]
@@ -495,7 +509,6 @@ class ERSEnvWrapper(gym.Wrapper):
             np.round(action * self.n_ambs, 2)), level=logger.DEBUG)
         self.obs, r, d, _ = super().step(action)
         self.request_heat_maps.append(self.obs[0:self.n_bases])
-        # r = r / 200
         return self._observation(), r, d, _
 
     def _observation(self):
@@ -503,7 +516,7 @@ class ERSEnvWrapper(gym.Wrapper):
         obs = np.concatenate((np.concatenate(
             self.request_heat_maps, axis=0), self.obs[self.n_bases:]), axis=0)
         logger.log('req_heat_map: {0}'.format(
-            np.round(50 * self.obs[0:self.n_bases], 2)), level=logger.DEBUG)
+            np.round(self.obs[0:self.n_bases], 2)), level=logger.DEBUG)
         return obs
 
 
@@ -665,12 +678,10 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             a = act(obs)
             obs_, r, d, _ = env.step(a)
             if render:
-                env.render()
+                env.render(mode=render_mode)
             if learning:
                 experience_buffer.add(Experience(obs, a, r, d, _, obs_))
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
-        # if 'ERS' in env_id:
-        #     R = 200 * R
         Rs.append(R)
         if no_explore:
             no_explore_Rs.append(R)
@@ -733,19 +744,18 @@ if __name__ == '__main__':
     nn_size = args.nn_size
     init_scale = args.init_scale
     render = args.render
+    render_mode = args.render_mode
     save_path = os.path.join(logger.get_dir(), "model")
     load_path = args.saved_model
+    ERSEnvWrapper.k = args.nstack
+    FrameStack.k = args.nstack
     if 'ERSEnv-ca' in env_id:
-        ob_dtype = args.ob_dtype
         wrappers = [ERSEnvWrapper]
     elif 'ERSEnv-im' in env_id:
-        ob_dtype = 'uint8'
-        wrappers = [FrameStack, ERSEnvWrapper]
+        wrappers = [FrameStack]
     elif 'Pole' in env_id:
-        ob_dtype = 'float32'
         wrappers = [CartPoleWrapper]
     elif 'NoFrameskip' in env_id:
-        ob_dtype = 'uint8'
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame,
                     SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
     with tf.Session() as sess:

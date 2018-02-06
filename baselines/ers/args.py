@@ -48,7 +48,7 @@ def parse():
     parser.add_argument(
         '--nsteps', help='an update happens every nsteps timesteps for each env', type=int, default=5)
     parser.add_argument(
-        '--nstack', help='how many frames to stack to create one obs', type=int, default=1)
+        '--nstack', help='how many frames to stack to create one obs', type=int, default=3)
     parser.add_argument('--_lambda', help='lambda=1 => use nsteps returns. lambda=0 => use 1 step returns. intermidiate values cause averaging of various step returns. Equivalent to eligibility traces', type=float, default=0.95)
     parser.add_argument(
         '--logdir', help='logs will be saved to {logdir}/{env}/{run_no}/  . Defaults to os env variable OPENAI_LOGDIR. run_no gets incremented automatically based on existance of previous runs in {logdir}/{env}/ . No logging if logdir is not provided and the env variable is not set', default=os.getenv('OPENAI_LOGDIR'))
@@ -56,6 +56,7 @@ def parse():
         '--saved_model', help='file from which to restore model. This file will not get overwritten when new model is saved. New models are always saved to {logdir}/{env}/{run_no}/model', default=None)
     parser.add_argument(
         '--render', help='whether or not to render the env. False by default', type=str2bool, default=False)
+    parser.add_argument('--render_mode', default='human')
     parser.add_argument(
         '--no_training', help='whether to just play without training', type=str2bool, default=False)
     parser.add_argument('--mb_size', type=int, default=64)
