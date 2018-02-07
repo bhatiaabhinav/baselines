@@ -261,8 +261,11 @@ class Actor:
         self.R_exploit_placeholder = tf.placeholder(dtype=tf.float32)
         self.R_exploit_summary = tf.summary.scalar(
             'Reward_Per_Episode_Exploit', self.R_exploit_placeholder)
+        self.blip_R_exploit_placeholder = tf.placeholder(dtype=tf.float32)
+        self.blip_R_exploit_summary = tf.summary.scalar(
+            'Blip_Reward_Per_Episode_Exploit', self.blip_R_exploit_placeholder)
         self.score_summary = tf.summary.merge(
-            [self.R_summary, self.R_exploit_summary])
+            [self.R_summary, self.R_exploit_summary, self.blip_R_exploit_summary])
 
     def get_a_V_A_Q(self, states):
         ops, feed = self.get_a_V_A_Q_op_and_feed(states)
@@ -663,11 +666,11 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             actor.writer.add_summary(A_summary, f)
             actor.writer.add_summary(Q_summary, f)
         return a
-    Rs, no_explore_Rs, f = [], [], 0
+    Rs, no_explore_Rs, no_explore_blip_Rs, f = [], [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
     pre_train = True
     for ep in range(learning_episodes if learning else test_episodes):
-        obs, d, R, ep_l = env.reset(), False, 0, 0
+        obs, d, R, blip_R, ep_l = env.reset(), False, 0, 0, 0
         if learning:
             noise.reset()
         no_explore = (ep % 2 == 0) or not learning
@@ -682,15 +685,26 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             if learning:
                 experience_buffer.add(Experience(obs, a, r, d, _, obs_))
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
+            if 'blip_reward' in _:
+                blip_R += _['blip_reward']
         Rs.append(R)
         if no_explore:
             no_explore_Rs.append(R)
-        av = np.average(Rs[-100:])
-        no_explore_av = np.average(no_explore_Rs[-100:])
-        logger.log('Episode {0}:\tReward: {1}\tLength: {2}\tAv_R: {3}\tExploit_Av_R: {4}{5}'.format(
-            ep, R, ep_l, av, no_explore_av, "\t(exploited)" if no_explore else ""))
+            no_explore_blip_Rs.append(blip_R)
+        logger.logkvs({
+            'Episode': ep,
+            'Reward': R,
+            'Exploited': no_explore,
+            'Blip_Reward': blip_R,
+            'Length': ep_l,
+            'Average Reward': np.average(Rs[-100:]),
+            'Exploit Average Reward': np.average(no_explore_Rs[-100:]),
+            'Exploit Average Blip Reward': np.average(no_explore_blip_Rs[-100:])
+        })
+        logger.dump_tabular()
         score_summary = actor.score_summary.eval(
-            feed_dict={actor.R_placeholder: Rs[-1], actor.R_exploit_placeholder: no_explore_Rs[-1]})
+            feed_dict={actor.R_placeholder: Rs[-1], actor.R_exploit_placeholder: no_explore_Rs[-1],
+                       actor.blip_R_exploit_placeholder: no_explore_blip_Rs[-1]})
         actor.writer.add_summary(score_summary, ep)
         if save_path and ep % 50 == 0:
             actor.save(save_path)
