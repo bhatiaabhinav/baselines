@@ -1,10 +1,11 @@
 """
 dualing network style advantageous DDPG
 """
-from collections import deque
 import os
 import os.path
 import sys
+import time
+from collections import deque
 from typing import List  # noqa: F401
 
 import gym
@@ -16,9 +17,11 @@ import tensorflow.contrib as tc
 import gym_ERSLE  # noqa: F401
 from baselines import logger
 from baselines.a2c.utils import conv, conv_to_fc, fc
-from baselines.common.atari_wrappers import FrameStack, EpisodicLifeEnv,\
-    NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame, SkipAndFrameStack,\
-    ClipRewardEnv, BreakoutContinuousActionWrapper
+from baselines.common.atari_wrappers import (BreakoutContinuousActionWrapper,
+                                             ClipRewardEnv, EpisodicLifeEnv,
+                                             FireResetEnv, FrameStack, MaxEnv,
+                                             NoopResetEnv, SkipAndFrameStack,
+                                             WarpFrame)
 
 
 class Actor:
@@ -682,6 +685,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             obs_, r, d, _ = env.step(a)
             if render:
                 env.render(mode=render_mode)
+                if render_fps is not None:
+                    time.sleep(1 / render_fps)
             if learning:
                 experience_buffer.add(Experience(obs, a, r, d, _, obs_))
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
@@ -759,6 +764,7 @@ if __name__ == '__main__':
     init_scale = args.init_scale
     render = args.render
     render_mode = args.render_mode
+    render_fps = args.render_fps
     save_path = os.path.join(logger.get_dir(), "model")
     load_path = args.saved_model
     ERSEnvWrapper.k = args.nstack
