@@ -33,16 +33,27 @@ class Actor:
         self.ac_shape = ac_shape
         self.tau = tau
 
-        def conv_layers(inputs, inputs_shape, scope):
+        def conv_layers(inputs, inputs_shape, scope, training=False):
             with tf.variable_scope(scope):
-                if inputs_shape[0] >= 60:
-                    c1 = conv(inputs, 'c1', nf=32, rf=8,
-                              stride=4, init_scale=np.sqrt(2))
-                c2 = conv(c1 if inputs_shape[0] >= 60 else inputs,
-                          'c2', nf=32, rf=4, stride=2, init_scale=np.sqrt(2))
-                c3 = conv(c2, 'c3', nf=64, rf=3,
-                          stride=1, init_scale=np.sqrt(2))
-                flat = conv_to_fc(c3)
+                strides = [4, 2, 1]
+                nfs = [32, 32, 64]
+                rfs = [8, 4, 3]
+                num_convs = 3 if inputs_shape[0] >= 60 else 2
+                for i in range(3 - num_convs, 3):
+                    with tf.variable_scope('c{0}'.format(i + 1)):
+                        c = conv(
+                            inputs, 'conv', nfs[i], rfs[i], strides[i], pad='VALID', act=lambda x: x)
+                        if use_layer_norm:
+                            # it is ok to use layer norm since we are using VALID padding. So corner neurons are OK.
+                            c = tc.layers.layer_norm(
+                                c, center=True, scale=True)
+                        elif use_batch_norm:
+                            c = tf.layers.batch_normalization(
+                                c, training=training, name='batch_norm')
+                        c = tf.nn.relu(c, name='relu')
+                        inputs = c
+                with tf.variable_scope('conv_to_fc'):
+                    flat = conv_to_fc(inputs)
             return flat
 
         def hidden_layers(inputs, scope, size, training=False):
@@ -64,9 +75,10 @@ class Actor:
             conv_needed = len(inputs_shape) > 1
             with tf.variable_scope(scope):
                 if conv_needed:
-                    inp = tf.cast(inputs, tf.float32, name='cast_to_float') / 255. \
+                    inp = tf.divide(tf.cast(inputs, tf.float32, name='cast_to_float'), 255., name='divide_by_255') \
                         if inputs_dtype == 'uint8' else inputs
-                    flat = conv_layers(inp, inputs_shape, 'conv_layers')
+                    flat = conv_layers(inp, inputs_shape,
+                                       'conv_layers', training=training)
                 else:
                     flat = inputs
                 h = hidden_layers(flat, 'hidden_layers',
@@ -521,8 +533,62 @@ class ERSEnvWrapper(gym.Wrapper):
         assert len(self.request_heat_maps) == self.k
         obs = np.concatenate((np.concatenate(
             self.request_heat_maps, axis=0), self.obs[self.n_bases:]), axis=0)
-        logger.log('req_heat_map: {0}'.format(
-            np.round(self.obs[0:self.n_bases], 2)), level=logger.DEBUG)
+        if logger.Logger.CURRENT.level <= logger.DEBUG:
+            logger.log('req_heat_map: {0}'.format(
+                np.round(self.obs[0:self.n_bases], 2)), level=logger.DEBUG)
+        return obs
+
+
+class ERSEnvImWrapper(gym.Wrapper):
+    k = 3
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.k = ERSEnvImWrapper.k
+        self.request_heat_maps = deque([], maxlen=self.k)
+        self.n_ambs = 24
+        self.n_bases = env.action_space.shape[0]
+        self.action_space = gym.spaces.Box(0, 1, shape=[self.n_bases])
+        shp = env.observation_space.shape
+        self.observation_space = gym.spaces.Box(
+            low=0, high=255, shape=(shp[0], shp[1], self.k + shp[2] - 1))
+
+    def compute_alloc(self, action):
+        action = np.clip(action, 0, 1)
+        remaining = 1
+        alloc = np.zeros([self.n_bases])
+        for i in range(len(action)):
+            alloc[i] = action[i] * remaining
+            remaining -= alloc[i]
+        alloc[-1] = remaining
+        assert all(alloc >= 0) and all(
+            alloc <= 1), "alloc is {0}".format(alloc)
+        # assert sum(alloc) == 1, "sum is {0}".format(sum(alloc))
+        return alloc
+
+    def _reset(self):
+        """Clear buffer and re-fill by duplicating the first observation."""
+        self.obs = self.env.reset()
+        for _ in range(self.k):
+            self.request_heat_maps.append(self.obs[:, :, 0:1])
+        return self._observation()
+
+    def step(self, action):
+        # action = self.compute_alloc(action)
+        logger.log('alloc: {0}'.format(
+            np.round(action * self.n_ambs, 2)), level=logger.DEBUG)
+        self.obs, r, d, _ = super().step(action)
+        self.request_heat_maps.append(self.obs[:, :, 0:1])
+        return self._observation(), r, d, _
+
+    def _observation(self):
+        assert len(self.request_heat_maps) == self.k
+        obs = np.concatenate((np.concatenate(
+            self.request_heat_maps, axis=2), self.obs[:, :, 1:]), axis=2)
+        if logger.Logger.CURRENT.level <= logger.DEBUG:
+            logger.log('req_heat_map: {0}'.format(
+                np.round(self.obs[:, :, 0], 2)), level=logger.DEBUG)
+        assert list(obs.shape) == [21, 21, 5]
         return obs
 
 
@@ -665,7 +731,7 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
                 a = env.action_space.high * np.clip(a, -1, 1)
         logger.log('ep_f: {0}\tA: {1}\tQ: {2}'.format(
             ep_l, adv, q), level=logger.DEBUG)
-        if f % 100 == 0 and logger.Logger.CURRENT.level <= logger.DEBUG:
+        if f % 100 == 0:
             actor.writer.add_summary(A_summary, f)
             actor.writer.add_summary(Q_summary, f)
         return a
@@ -772,7 +838,7 @@ if __name__ == '__main__':
     if 'ERSEnv-ca' in env_id:
         wrappers = [ERSEnvWrapper]
     elif 'ERSEnv-im' in env_id:
-        wrappers = [FrameStack]
+        wrappers = [ERSEnvImWrapper]
     elif 'Pole' in env_id:
         wrappers = [CartPoleWrapper]
     elif 'NoFrameskip' in env_id:
