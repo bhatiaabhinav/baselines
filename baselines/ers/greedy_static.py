@@ -54,18 +54,21 @@ def allocate(env, target_allocation, num_ambs, current_allocation=None):
             current_allocation.append(info[0]['base' + str(base)])
     assert(sum(current_allocation) == num_ambs)
 
-    change = (np.asarray(target_allocation) - np.asarray(current_allocation)).tolist()
+    change = (np.asarray(target_allocation) -
+              np.asarray(current_allocation)).tolist()
     assert(sum(change) == 0)
     change = [{'base': i, 'change': change[i]} for i in range(num_bases)]
     largest_sources = sorted(change, key=lambda item: item['change'])
-    largest_gainers = sorted(change, key=lambda item: item['change'], reverse=True)
+    largest_gainers = sorted(
+        change, key=lambda item: item['change'], reverse=True)
     ls_index = 0
     lg_index = 0
     while max(ls_index, lg_index) < num_bases:
         while largest_sources[ls_index]['change'] < 0 and largest_gainers[lg_index]['change'] > 0:
             src = largest_sources[ls_index]['base']
             dst = largest_gainers[lg_index]['base']
-            action = 1 + dst * (num_bases - 1) + src if src < dst else dst * (num_bases - 1) + src
+            action = 1 + dst * (num_bases - 1) + \
+                src if src < dst else dst * (num_bases - 1) + src
             obs, r, dones, info = env.step(get_actions(env.num_envs, action))
             av_reward += np.average(r)
             largest_sources[ls_index]['change'] += 1
@@ -95,7 +98,8 @@ def allocate_per_amb(env, allocation_per_amb, num_ambs, num_bases):
         src_base = 0
         # action_id = dest_base * num_bases + src_base
         action_id = 1 + dest_base * \
-            (num_bases - 1) + src_base if src_base < dest_base else dest_base * (num_bases - 1) + src_base
+            (num_bases - 1) + src_base if src_base < dest_base else dest_base * \
+            (num_bases - 1) + src_base
         obs, r, dones, info = env.step(get_actions(env.num_envs, action_id))
         av_reward += np.average(r)
     return av_reward
@@ -115,7 +119,8 @@ def test_candidate(allocation_per_base_so_far, candidate_base, env, num_ambs, nu
     av_reward = 0
     done = False
     while not done:
-        obs, r, dones, info = env.step(get_actions(env.num_envs, target_allocation))
+        obs, r, dones, info = env.step(
+            get_actions(env.num_envs, target_allocation))
         done = dones[0]
         av_reward += np.average(r)
     return av_reward
@@ -132,8 +137,15 @@ def optimize(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_time
             f.write(json.dumps({'policy': str(policy), 'env_id': env.id, 'nenvs': nenvs, 'seed': seed, 'ac_space': str(ac_space), 'ob_space': str(ob_space), 'ob_type': ob_dtype, 'nsteps': nsteps, 'nstack': nstack, 'total_timesteps': total_timesteps, 'frameskip': frameskip, 'vf_coef': vf_coef, 'ent_coef': ent_coef,
                                 'max_grad_norm': max_grad_norm, 'lr': lr, 'lrschedule': lrschedule, 'epsilon': epsilon, 'alpha': alpha, 'gamma': gamma, 'lambda': _lambda, 'log_interval': log_interval, 'saved_model_path': saved_model_path, 'render': render, 'no_training': no_training, 'abstime': time.time()}))
 
-    num_ambs = 24
-    num_bases = 12
+    version_to_amb_map = {
+        '4': 24,
+        '5': 50,
+        '6': 32,
+        '7': 25,
+        '8': 25
+    }
+    num_ambs = version_to_amb_map[env.id[-1]]
+    num_bases = ac_space.shape[0]
     print('Num ambs: {0}\tNum bases: {1}\n'.format(num_ambs, num_bases))
 
     reward_so_far = 0
@@ -153,16 +165,19 @@ def optimize(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_time
             if gain > best_gain:
                 best_gain = gain
                 best_base = candidate_base
-                print('Tried base {0}:\tGain: {1}\t[Best so far]'.format(candidate_base, gain))
+                print('Tried base {0}:\tGain: {1}\t[Best so far]'.format(
+                    candidate_base, gain))
             else:
-                print('Tried base {0}:\tGain: {1}'.format(candidate_base, gain))
+                print('Tried base {0}:\tGain: {1}'.format(
+                    candidate_base, gain))
 
         allocation_per_amb_so_far.append(best_base)
         allocation_per_base_so_far[best_base] += 1
         reward_so_far += best_gain
         print('Best base for amb {0} is {1}'.format(amb, best_base))
         print('Best score so far: {0}'.format(reward_so_far))
-        print('Base wise alloction so far: {0}'.format(allocation_per_base_so_far))
+        print('Base wise alloction so far: {0}'.format(
+            allocation_per_base_so_far))
         print('-------------------------------------')
         print('-------------------------------------')
         print('')
