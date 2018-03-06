@@ -82,6 +82,8 @@ def parse():
     parser.add_argument('--replay_memory_gigabytes', type=float, default=2.0)
     parser.add_argument('--use_layer_norm', type=str2bool, default=False)
     parser.add_argument('--use_batch_norm', type=str2bool, default=False)
+    parser.add_argument('--use_norm_actor', type=str2bool, default=True,
+                        help='For DDPG: whether bn/ln, whatever is set, is to be applied to actor as well')
     parser.add_argument('--init_scale', type=float, default=0.0001)
     parser.add_argument('--nn_size', type=literal, default="[400,300,200]")
     parser.add_argument('--generations', type=int, default=1000)

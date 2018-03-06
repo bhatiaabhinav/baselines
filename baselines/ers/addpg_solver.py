@@ -26,14 +26,14 @@ from baselines.common.atari_wrappers import (BreakoutContinuousActionWrapper,
 
 class Actor:
 
-    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=True, tau=0.001):
+    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor=False, nn_size=[64, 64], ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, use_layer_norm=False, use_batch_norm=False, use_norm_actor=True, tau=0.001):
         assert len(ac_shape) == 1
         self.session = session
         self.name = name
         self.ac_shape = ac_shape
         self.tau = tau
 
-        def conv_layers(inputs, inputs_shape, scope, training=False):
+        def conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):
             with tf.variable_scope(scope):
                 strides = [4, 2, 1]
                 nfs = [32, 32, 64]
@@ -43,11 +43,11 @@ class Actor:
                     with tf.variable_scope('c{0}'.format(i + 1)):
                         c = conv(
                             inputs, 'conv', nfs[i], rfs[i], strides[i], pad='VALID', act=lambda x: x)
-                        if use_layer_norm:
+                        if use_ln:
                             # it is ok to use layer norm since we are using VALID padding. So corner neurons are OK.
                             c = tc.layers.layer_norm(
                                 c, center=True, scale=True)
-                        elif use_batch_norm:
+                        elif use_bn:
                             c = tf.layers.batch_normalization(
                                 c, training=training, name='batch_norm')
                         c = tf.nn.relu(c, name='relu')
@@ -56,33 +56,33 @@ class Actor:
                     flat = conv_to_fc(inputs)
             return flat
 
-        def hidden_layers(inputs, scope, size, training=False):
+        def hidden_layers(inputs, scope, size, use_ln=False, use_bn=False, training=False):
             with tf.variable_scope(scope):
                 for i in range(len(size)):
                     with tf.variable_scope('h{0}'.format(i + 1)):
                         h = fc(inputs, 'fc', size[i], act=lambda x: x)
-                        if use_layer_norm:
+                        if use_ln:
                             h = tc.layers.layer_norm(
                                 h, center=True, scale=True)
-                        elif use_batch_norm:
+                        elif use_bn:
                             h = tf.layers.batch_normalization(
                                 h, training=training, name='batch_norm')
                         h = tf.nn.relu(h, name='relu')
                         inputs = h
             return inputs
 
-        def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, training=False, output_size=None):
+        def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, use_ln=False, use_bn=False, training=False, output_size=None):
             conv_needed = len(inputs_shape) > 1
             with tf.variable_scope(scope):
                 if conv_needed:
                     inp = tf.divide(tf.cast(inputs, tf.float32, name='cast_to_float'), 255., name='divide_by_255') \
                         if inputs_dtype == 'uint8' else inputs
                     flat = conv_layers(inp, inputs_shape,
-                                       'conv_layers', training=training)
+                                       'conv_layers', use_ln=use_ln, use_bn=use_bn, training=training)
                 else:
                     flat = inputs
                 h = hidden_layers(flat, 'hidden_layers',
-                                  hidden_size, training=training)
+                                  hidden_size, use_ln=use_ln, use_bn=use_bn, training=training)
                 if output_size is not None:
                     final = fc(h, 'output_layer', nh=output_size,
                                act=lambda x: x, init_scale=init_scale)
@@ -109,9 +109,9 @@ class Actor:
                         is_training_a = False if scope == 'target' else tf.placeholder(
                             dtype=tf.bool, name='is_training_a')
                         a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network',
-                                     nn_size, training=is_training_a, output_size=ac_shape[0])
+                                     nn_size, use_ln=use_layer_norm and use_norm_actor, use_bn=use_batch_norm and use_norm_actor, training=is_training_a, output_size=ac_shape[0])
                         a = safe_softmax(
-                            a, 'softmax') if 'ERS' in env_id else tf.nn.tanh(a, 'tanh')
+                            a, 'softmax') if softmax_actor else tf.nn.tanh(a, 'tanh')
                         use_actions_feed = tf.placeholder(
                             dtype=tf.bool, name='use_actions_feed')
                         actions_feed = tf.placeholder(
@@ -137,8 +137,8 @@ class Actor:
                             s_a_concat = tf.concat(
                                 [s, a], axis=-1, name="s_a_concat")
                             A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network',
-                                         nn_size[1:], training=is_training_critic, output_size=1)[:, 0]
-                        V = deep_net(states_feed, ob_shape, ob_dtype, 'V', nn_size,
+                                         nn_size[1:], use_ln=use_layer_norm, use_bn=use_batch_norm, training=is_training_critic, output_size=1)[:, 0]
+                        V = deep_net(states_feed, ob_shape, ob_dtype, 'V', nn_size, use_ln=use_layer_norm, use_bn=use_batch_norm,
                                      training=is_training_critic, output_size=1)[:, 0]
                         # Q:
                         Q = tf.add(V, A, name='Q')
@@ -605,8 +605,8 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     for W in wrappers:
         env = W(env)  # type: gym.Wrapper
     if actor is None:
-        actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape,
-                      ob_dtype=ob_dtype, q_lr=q_lr, a_lr=a_lr, use_layer_norm=use_layer_norm, tau=tau)
+        actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape, softmax_actor='ERS' in env_id,
+                      nn_size=nn_size, ob_dtype=ob_dtype, q_lr=q_lr, a_lr=a_lr, use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, tau=tau)
         sess.run(tf.global_variables_initializer())
     if load_path:
         try:
@@ -824,6 +824,7 @@ if __name__ == '__main__':
     test_mode = args.test_mode
     use_layer_norm = args.use_layer_norm
     use_batch_norm = args.use_batch_norm
+    use_norm_actor = args.use_norm_actor
     assert not (
         use_layer_norm and use_batch_norm), "Cannot use both layer norm and batch norm"
     nn_size = args.nn_size
