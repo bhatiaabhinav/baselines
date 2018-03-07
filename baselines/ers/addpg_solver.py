@@ -133,7 +133,7 @@ class Actor:
                             is_training_critic = False if scope == 'target' else tf.placeholder(
                                 dtype=tf.bool, name='is_training_critic')
                             s = deep_net(states_feed, ob_shape, ob_dtype, 'one_hidden',
-                                         nn_size[0:1], training=is_training_critic)
+                                         nn_size[0:1], use_ln=use_layer_norm, use_bn=use_batch_norm, training=is_training_critic)
                             s_a_concat = tf.concat(
                                 [s, a], axis=-1, name="s_a_concat")
                             A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network',
