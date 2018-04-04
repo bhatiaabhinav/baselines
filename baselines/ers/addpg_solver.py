@@ -17,6 +17,7 @@ import tensorflow.contrib as tc
 import gym_ERSLE  # noqa: F401
 from baselines import logger
 from baselines.a2c.utils import conv, conv_to_fc, fc
+from baselines.ers.utils import StaffordRandFixedSum
 from baselines.common.atari_wrappers import (BreakoutContinuousActionWrapper,
                                              ClipRewardEnv, EpisodicLifeEnv,
                                              FireResetEnv, FrameStack, MaxEnv,
@@ -148,6 +149,18 @@ class Actor:
                             self.V, self.A, self.Q = V, A, Q
                             self.is_training_critic = is_training_critic
 
+            with tf.variable_scope('noisy_actor'):
+                states_feed = tf.placeholder(dtype=ob_dtype, shape=[
+                                             None] + list(ob_shape))
+                self.states_feed_noisy_actor = states_feed
+                a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network', nn_size, use_ln=use_layer_norm and use_norm_actor,
+                             use_bn=use_batch_norm and use_norm_actor, training=False, output_size=ac_shape[0])
+                a = safe_softmax(
+                    a, 'softmax') if softmax_actor else tf.nn.tanh(a, 'tanh')
+                self.a_noisy_actor = a
+                self.divergence_noisy_actor = tf.sqrt(
+                    tf.reduce_mean(tf.square(self.a - self.a_noisy_actor)))
+
         # optimizers:
         with tf.name_scope('optimizers'):
             optimizer_A = tf.train.AdamOptimizer(
@@ -243,6 +256,31 @@ class Actor:
                     soft_update_op = hard_update_op
                 self.soft_update_target_network_op.append(soft_update_op)
 
+        with tf.name_scope('noisy_actor_update_ops'):
+            from_vars = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/original/actor'.format(name))
+            self.params_actor = from_vars
+            to_vars = tf.get_collection(
+                tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/noisy_actor'.format(name))
+            self.noise_vars = []
+            self.update_noisy_actor_op = []
+            for from_var, to_var in zip(from_vars, to_vars):
+                noise_var = tf.placeholder(
+                    shape=from_var.shape.as_list(), dtype=tf.float32)
+                self.noise_vars.append(noise_var)
+                self.update_noisy_actor_op.append(
+                    to_var.assign(from_var + noise_var))
+
+        with tf.name_scope('actor_params_sensitivities'):
+            sensitivities_squared = [0] * len(self.params_actor)
+            for k in range(ac_shape[0]):
+                gradients_k = tf.gradients(self.a[:, k], self.params_actor)
+                for var_index in range(len(self.params_actor)):
+                    sensitivities_squared[var_index] = sensitivities_squared[var_index] + tf.square(
+                        gradients_k[var_index])
+            self.actor_params_sensitivities = [
+                tf.sqrt(s) for s in sensitivities_squared]
+
         with tf.name_scope('saving_loading_ops'):
             # for saving and loading
             self.params = tf.get_collection(
@@ -281,6 +319,13 @@ class Actor:
             'Blip_Reward_Per_Episode_Exploit', self.blip_R_exploit_placeholder)
         self.score_summary = tf.summary.merge(
             [self.R_summary, self.R_exploit_summary, self.blip_R_exploit_summary])
+        # param noise variables:
+        self.divergence_placeholder = tf.placeholder(dtype=tf.float32)
+        self.divergence_summary = tf.summary.scalar(
+            'Param_Noise_Actor_Divergence', self.divergence_placeholder)
+        self.adaptive_sigma_placeholder = tf.placeholder(dtype=tf.float32)
+        self.adaptive_sigma_summary = tf.summary.scalar(
+            'Param_Noise_Adaptive_Sigma', self.adaptive_sigma_placeholder)
 
     def get_a_V_A_Q(self, states):
         ops, feed = self.get_a_V_A_Q_op_and_feed(states)
@@ -291,6 +336,19 @@ class Actor:
             {self.states_feed: states, self.use_actions_feed: False,
                 self.actions_feed: [np.zeros(self.ac_shape)],
                 self.is_training_a: False, self.is_training_critic: False}
+
+    def get_noisy_a(self, states):
+        return self.session.run(self.a_noisy_actor, feed_dict={self.states_feed_noisy_actor: states})
+
+    def get_divergence_noisy_actor(self, states):
+        feed_dict = {
+            self.states_feed_noisy_actor: states,
+            self.states_feed: states,
+            self.is_training_a: False,
+            self.use_actions_feed: False,
+            self.actions_feed: [np.zeros(self.ac_shape)]
+        }
+        return self.session.run(self.divergence_noisy_actor, feed_dict=feed_dict)
 
     def get_V_A_Q(self, states, actions):
         ops, feed = self.get_V_A_Q_op_and_feed(states, actions)
@@ -367,6 +425,37 @@ class Actor:
     def get_soft_update_target_network_op_and_feed(self):
         return [self.soft_update_target_network_op], {}
 
+    def update_noisy_actor(self, param_noise):
+        feed_dict = {}
+        for noise_var_placeholder, noise_var in zip(self.noise_vars, param_noise):
+            feed_dict[noise_var_placeholder] = noise_var
+        return self.session.run(self.update_noisy_actor_op, feed_dict=feed_dict)
+
+    def generate_normal_param_noise(self, sigma):
+        params = self.session.run(self.params_actor)
+        noise = []
+        for p in params:
+            n = sigma * np.random.standard_normal(size=np.shape(p))
+            noise.append(n)
+        return noise
+
+    def generate_safe_noise(self, sigma, states):
+        feed_dict = {
+            self.states_feed: states,
+            self.is_training_a: False,
+            self.use_actions_feed: False,
+            self.actions_feed: [np.zeros(self.ac_shape)]
+        }
+        params, sensitivities = self.session.run(
+            [self.params_actor, self.actor_params_sensitivities], feed_dict=feed_dict)
+        noise = []
+        for p, s in zip(params, sensitivities):
+            s = s / len(states)  # to make s independent of mb size
+            n = sigma * np.random.standard_normal(size=np.shape(p))
+            n = n / (s + 1e-3)
+            noise.append(n)
+        return noise
+
     def save(self, save_path):
         params = self.session.run(self.params)
         from baselines.a2c.utils import make_path
@@ -425,6 +514,10 @@ class ExperienceBuffer:
         # yield self.buffer[(self.next_index - 1) % self.buffer_length]
         for i in indices:
             yield self.buffer[i]
+
+    def random_states(self, count):
+        experiences = list(self.random_experiences(count))
+        return [e.state for e in experiences]
 
 
 class OrnsteinUhlenbeckActionNoise:
@@ -491,11 +584,12 @@ class DiscreteToContinousWrapper(gym.Wrapper):
 class ERSEnvWrapper(gym.Wrapper):
     k = 3
 
-    def __init__(self, env):
+    def __init__(self, env: gym.Env):
         super().__init__(env)
         self.k = ERSEnvWrapper.k
         self.request_heat_maps = deque([], maxlen=self.k)
-        self.n_ambs = 24
+        from gym_ERSLE import version_to_ambs_map
+        self.n_ambs = version_to_ambs_map[env_id[-2:]]
         self.n_bases = env.action_space.shape[0]
         self.action_space = gym.spaces.Box(0, 1, shape=[self.n_bases])
         self.observation_space = gym.spaces.Box(
@@ -599,6 +693,111 @@ def normalize(a):
     return a
 
 
+def analyse_q(sess: tf.Session, actor=None, load_path=None):
+    np.random.seed(seed)
+    env = gym.make(env_id)  # type: gym.Env
+    for W in wrappers:
+        env = W(env)  # type: gym.Wrapper
+    N = 100000
+    data_shape = [N] + list(env.action_space.shape)
+    data_var = tf.Variable(tf.random_normal(
+        data_shape), name='action_data')
+    data_placeholder = tf.placeholder(
+        dtype='float32', shape=data_shape, name='action_data_placeholder')
+    data_load_op = tf.assign(data_var, data_placeholder)
+    saver = tf.train.Saver()
+    if actor is None:
+        actor = Actor(sess, 'actor', env.observation_space.shape, env.action_space.shape, softmax_actor='ERS' in env_id,
+                      nn_size=nn_size, ob_dtype=ob_dtype, q_lr=q_lr, a_lr=a_lr, use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, tau=tau)
+        sess.run(tf.global_variables_initializer())
+    if load_path:
+        try:
+            actor.load(load_path)
+            logger.log('model loaded')
+        except Exception as ex:
+            logger.log('Failed to load model. Reason = {0}'.format(
+                ex), level=logger.ERROR)
+    actor.update_target_networks()
+
+    def Q(s, a):
+        return actor.get_V_A_Q(s, a)[2]
+
+    def argmax_Q(s):
+        return actor.get_a_V_A_Q(s)[0]
+
+    def analyse_q_vs_a_naive():
+        obs = env.reset()
+        done = False
+        R = 0
+        state_index = 0
+        while not done:
+            # for i in range(100):
+            #     actor.train_a([obs])
+            # take the default action
+            a = argmax_Q([obs])[0]
+            q = Q([obs], [a])[0]
+            domain = [0, 1] if 'ERS' in env_id else [-1, 1]
+            npoints = 500
+            x = np.linspace(domain[0], domain[1], num=npoints)
+            import matplotlib.pyplot as plt
+            plt.clf()
+            for idx in range(len(a)):
+                # for this index: build the graph keeping other idxs of 'a' constant
+                states = [obs] * npoints
+                actions = np.asarray([a] * npoints)
+                actions[:, idx] = x
+                y = Q(states, actions)
+                plt.plot(x, y, label='Q vs a[{0}]'.format(idx))
+            plt.plot(a, [q] * len(a), 'rx', label='chosen action')
+            plt.legend()
+            plt.title('Q vs Action for State S{0}'.format(state_index))
+            plt.ylabel('Learnt Q')
+            plt.xlabel('Action components')
+            plt.savefig(os.path.join(logger.get_dir(),
+                                     'S{0:02d}_Q_vs_a.png'.format(state_index)))
+            obs, r, done, _ = env.step(a)
+            state_index += 1
+            R += r
+        logger.log('R: {0}'.format(R))
+
+    def analyse_q_tb():
+        obs = env.reset()
+        data = StaffordRandFixedSum(env.action_space.shape[0], 1, N)
+        logger.log('Got Random action data points')
+        data_q = Q([obs] * N, data)
+        logger.log('Got the Q values')
+        sess.run(data_load_op, feed_dict={data_placeholder: data})
+        logger.log('loaded the action data into tf variable')
+        saver.save(sess, os.path.join(logger.get_dir(), 'model.ckpt'), 0)
+        logger.log('saved the checkpoint')
+        metadata_filename = os.path.join(logger.get_dir(), 'q_s0.tsv')
+        projector_config_filename = os.path.join(
+            logger.get_dir(), 'projector_config.ptxt')
+        with open(projector_config_filename, 'w') as f:
+            lines = "embeddings {{\ntensor_name: 'action_data'\nmetadata_path: '{metadata_filename}'\n}}".format(
+                metadata_filename='$LOG_DIR/q_s0.tsv')
+            f.write(lines)
+        logger.log('wrote the config file')
+        with open(metadata_filename, 'w') as f:
+            # f.write('Q')
+            for qvalue in data_q:
+                f.write('{0}\n'.format(qvalue))
+        logger.log('wrote the metadata file')
+
+    # def analyse_q_scikit():
+    #     obs = env.reset()
+    #     data = StaffordRandFixedSum(env.action_space.shape[0], 1, N)
+    #     logger.log('Got Random action data points')
+    #     data_q = Q([obs] * N, data)
+    #     logger.log('Got the Q values')
+
+    # take the initial state:
+    env.seed(test_env_seed)
+    # analyse_q_vs_a_naive()
+    analyse_q_tb()
+    env.close()
+
+
 def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_path=None):
     np.random.seed(seed)
     env = gym.make(env_id)  # type: gym.Env
@@ -619,8 +818,11 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
     if learning:
         experience_buffer = ExperienceBuffer(
             size_in_bytes=replay_memory_size_in_bytes)
-        noise = Noise_type(mu=np.zeros(
-            env.action_space.shape), sigma=exploration_sigma, theta=exploration_theta)
+        if use_param_noise:
+            adaptive_sigma = init_scale
+        else:
+            noise = Noise_type(mu=np.zeros(env.action_space.shape),
+                               sigma=exploration_sigma, theta=exploration_theta)
 
     def Q(s, a):
         return actor.get_V_A_Q(s, a)[2]
@@ -721,28 +923,62 @@ def test_actor_on_env(sess, learning=False, actor=None, save_path=None, load_pat
             actor.writer.add_summary(av_max_A_summary, f)
 
     def act(obs):
-        a, value, adv, q, A_summary, Q_summary = actor.get_a_V_A_Q([obs])
-        a, value, adv, q = a[0], value[0], adv[0], q[0]
+        if not use_param_noise or no_explore:
+            a, value, adv, q, A_summary, Q_summary = actor.get_a_V_A_Q([obs])
+            a, value, adv, q = a[0], value[0], adv[0], q[0]
         if not no_explore:
-            a += noise()
-            if 'ERS' in env_id:
-                a = normalize(a)
+            if use_param_noise:
+                a = actor.get_noisy_a([obs])[0]
             else:
-                a = env.action_space.high * np.clip(a, -1, 1)
-        logger.log('ep_f: {0}\tA: {1}\tQ: {2}'.format(
-            ep_l, adv, q), level=logger.DEBUG)
-        if f % 100 == 0:
-            actor.writer.add_summary(A_summary, f)
-            actor.writer.add_summary(Q_summary, f)
+                a += noise()
+                if 'ERS' in env_id:
+                    a = normalize(a)
+                else:
+                    a = env.action_space.high * np.clip(a, -1, 1)
+        if not use_param_noise or no_explore:
+            logger.log('ep_f: {0}\tA: {1}\tQ: {2}'.format(
+                ep_l, adv, q), level=logger.DEBUG)
+            if f % 100 == 0:
+                actor.writer.add_summary(A_summary, f)
+                actor.writer.add_summary(Q_summary, f)
         return a
+
     Rs, no_explore_Rs, no_explore_blip_Rs, f = [], [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
     pre_train = True
     for ep in range(learning_episodes if learning else test_episodes):
         obs, d, R, blip_R, ep_l = env.reset(), False, 0, 0, 0
-        if learning:
-            noise.reset()
         no_explore = (ep % 2 == 0) or not learning
+        if not no_explore:
+            if use_param_noise:
+                if len(experience_buffer) >= minibatch_size:
+                    mb_states = experience_buffer.random_states(minibatch_size)
+                    if use_safe_noise:
+                        actor.update_noisy_actor(
+                            param_noise=actor.generate_safe_noise(adaptive_sigma, mb_states))
+                    else:
+                        actor.update_noisy_actor(
+                            param_noise=actor.generate_normal_param_noise(adaptive_sigma))
+                    divergence = actor.get_divergence_noisy_actor(mb_states)
+                    logger.logkv('Exploitation Divergence', divergence)
+                    actor.writer.add_summary(actor.divergence_summary.eval(
+                        feed_dict={actor.divergence_placeholder: divergence}), ep)
+                    multiplier = 1 + abs(divergence - exploration_sigma)
+                    if divergence < exploration_sigma:
+                        adaptive_sigma = adaptive_sigma * multiplier
+                    else:
+                        adaptive_sigma = adaptive_sigma / multiplier
+                else:
+                    adaptive_sigma = init_scale
+                    actor.update_noisy_actor(
+                        param_noise=actor.generate_normal_param_noise(adaptive_sigma))
+
+                logger.logkv('Adaptive Sigma', adaptive_sigma)
+                actor.writer.add_summary(actor.adaptive_sigma_summary.eval(
+                    feed_dict={actor.adaptive_sigma_placeholder: adaptive_sigma}), ep)
+
+            else:
+                noise.reset()
         while not d:
             if learning and ep >= exploration_episodes and f % train_every == 0:
                 train(pre_train=pre_train)
@@ -816,12 +1052,15 @@ if __name__ == '__main__':
     replay_memory_size_in_bytes = args.replay_memory_gigabytes * 2**30
     exploration_sigma = args.exploration_sigma
     exploration_theta = args.exploration_theta
+    use_param_noise = args.use_param_noise
+    use_safe_noise = args.use_safe_noise
     Noise_type = OrnsteinUhlenbeckActionNoise
     learning_env_seed = seed
     learning_episodes = args.training_episodes
     test_env_seed = args.test_seed
     test_episodes = args.test_episodes
     test_mode = args.test_mode
+    analysis_mode = args.analysis_mode
     use_layer_norm = args.use_layer_norm
     use_batch_norm = args.use_batch_norm
     use_norm_actor = args.use_norm_actor
@@ -846,18 +1085,31 @@ if __name__ == '__main__':
         wrappers = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv, WarpFrame,
                     SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
     with tf.Session() as sess:
-        if not test_mode:
+        if not (test_mode or analysis_mode):
             logger.log('Training actor. seed={0}. learning_env_seed={1}'.format(
                 seed, learning_env_seed))
             actor = test_actor_on_env(
                 sess, True, save_path=save_path, load_path=load_path)
             actor.save(save_path)
-        logger.log('Testing actor. test_env_seed={0}'.format(test_env_seed))
-        if not test_mode:
+            logger.log(
+                'Testing actor. test_env_seed={0}'.format(test_env_seed))
             test_actor_on_env(sess, learning=False, actor=actor)
-        else:
+            logger.log('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
+                seed, learning_env_seed, test_env_seed))
+            logger.log('Analysing model')
+            analyse_q(sess, actor=actor, load_path=None)
+            logger.log("Analysis done. Results saved to logdir.")
+        if test_mode:
+            logger.log(
+                'Testing actor. test_env_seed={0}'.format(test_env_seed))
             assert load_path is not None, "Please provide a saved model"
             test_actor_on_env(sess, learning=False, load_path=load_path)
-        logger.log('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
-            seed, learning_env_seed, test_env_seed))
+            logger.log('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
+                seed, learning_env_seed, test_env_seed))
+        if analysis_mode:
+            logger.log('Analysing model')
+            assert load_path is not None, "Please provide a saved model"
+            analyse_q(sess, actor=None, load_path=load_path)
+            logger.log("Analysis done. Results saved to logdir.")
+
         logger.log('-------------------------------------------------\n')

@@ -36,3 +36,6 @@ src
 *.sln
 /.vs/
 /.vscode/
+
+# mypy stuff
+.mypy_cache/

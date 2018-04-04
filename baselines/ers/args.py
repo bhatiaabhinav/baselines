@@ -29,8 +29,7 @@ def parse():
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--env', help='environment ID',
-                        default='pyERSEnv-ca-dynamic-1440-v4')
+    parser.add_argument('--env', help='environment ID')
     parser.add_argument(
         '--ob_dtype', help='datatype of observations eg. uint8, float32', default='float32')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
@@ -76,6 +75,8 @@ def parse():
     parser.add_argument('--exploration_episodes', type=int, default=100)
     parser.add_argument('--exploration_sigma', type=float, default=0.2)
     parser.add_argument('--exploration_theta', type=float, default=6)
+    parser.add_argument('--use_param_noise', type=str2bool, default=False)
+    parser.add_argument('--use_safe_noise', type=str2bool, default=False)
     parser.add_argument('--pre_training_steps', type=int, default=1000)
     parser.add_argument('--training_episodes', type=int, default=5000)
     parser.add_argument('--run_no_prefix', default='run')
@@ -91,6 +92,7 @@ def parse():
     parser.add_argument('--truncation_size', type=int, default=10)
     parser.add_argument('--mutation_sigma', type=float, default=0.02)
     parser.add_argument('--test_mode', type=str2bool, default=False)
+    parser.add_argument('--analysis_mode', type=str2bool, default=False)
     parser.add_argument('--test_episodes', type=int, default=100)
     parser.add_argument('--test_seed', type=int, default=42)
     parser.add_argument('--print_precision', type=int, default=2)
