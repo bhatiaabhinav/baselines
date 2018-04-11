@@ -72,6 +72,8 @@ def parse():
     parser.add_argument('--a_clip_norm', type=float, default=None)
     parser.add_argument('--l2_reg', type=float, default=1e-2)
     parser.add_argument('--a_l2_reg', type=float, default=0)
+    parser.add_argument('--log_transform_action_feed',
+                        type=str2bool, default=False)
     parser.add_argument('--exploration_episodes', type=int, default=100)
     parser.add_argument('--exploration_sigma', type=float, default=0.2)
     parser.add_argument('--exploration_theta', type=float, default=6)

@@ -23,8 +23,11 @@ def analyse_q(sess: tf.Session, env_id, wrappers, seed=0, test_env_seed=42, acto
     data_load_op = tf.assign(data_var, data_placeholder)
     saver = tf.train.Saver()
     if actor is None:
+        if 'ERS' in env_id:
+            kwargs = dict(kwargs, softmax_actor=True,
+                          log_transform_max_x=env.metadata['nambs'], log_transform_t=env.metadata['log_transform_alloc_t'])
         actor = Actor(sess, 'actor', env.observation_space.shape,
-                      env.action_space.shape, softmax_actor='ERS' in env_id, **kwargs)
+                      env.action_space.shape, **kwargs)
         sess.run(tf.global_variables_initializer())
     if load_path:
         try:

@@ -38,8 +38,11 @@ def test_actor_on_env(sess, env_id, wrappers, learning=False, actor=None, seed=0
     for W in wrappers:
         env = W(env)  # type: gym.Wrapper
     if actor is None:
+        if 'ERS' in env_id:
+            kwargs = dict(kwargs, softmax_actor=True,
+                          log_transform_max_x=env.metadata['nambs'], log_transform_t=env.metadata['log_transform_alloc_t'])
         actor = Actor(sess, 'actor', env.observation_space.shape,
-                      env.action_space.shape, softmax_actor='ERS' in env_id, **kwargs)
+                      env.action_space.shape, **kwargs)
         sess.run(tf.global_variables_initializer())
     if load_path:
         try:

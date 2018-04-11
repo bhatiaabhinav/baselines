@@ -14,7 +14,7 @@ class Actor:
     def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor=False, nn_size=[64, 64],
                  ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, init_scale=1e-3, use_layer_norm=False,
                  use_batch_norm=False, use_norm_actor=True, l2_reg=1e-2, a_l2_reg=0, clip_norm=None,
-                 a_clip_norm=None, tau=0.001, **kwargs):
+                 a_clip_norm=None, tau=0.001, log_transform_action_feed=False, log_transform_max_x=1, log_transform_t=1, **kwargs):
         assert len(ac_shape) == 1
         self.session = session
         self.name = name
@@ -84,6 +84,11 @@ class Actor:
                                                     axis=-1, keep_dims=True, name='max'))
                 return exp / tf.reduce_sum(exp, axis=-1, keep_dims=True, name='sum')
 
+        def log_transform(inputs, max_x, t, scope, is_input_normalized=True):
+            with tf.name_scope(scope):
+                x = max_x * inputs
+                return tf.log(1 + x / t) / tf.log(1 + max_x / t)
+
         with tf.variable_scope(name):
             for scope in ['original', 'target']:
                 with tf.variable_scope(scope):
@@ -122,6 +127,8 @@ class Actor:
                                 dtype=tf.bool, name='is_training_critic')
                             s = deep_net(states_feed, ob_shape, ob_dtype, 'one_hidden',
                                          nn_size[0:1], use_ln=use_layer_norm, use_bn=use_batch_norm, training=is_training_critic)
+                            if log_transform_action_feed:
+                                a = log_transform(a, log_transform_max_x, log_transform_t, scope='log_transform')
                             s_a_concat = tf.concat(
                                 [s, a], axis=-1, name="s_a_concat")
                             A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network',
