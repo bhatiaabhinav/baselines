@@ -16,6 +16,13 @@ from baselines import logger
 from baselines.a2c.utils import conv, conv_to_fc, fc
 
 
+def normalize(a, epsilon=1e-6):
+    a = np.clip(a, 0, 1)
+    a = a + epsilon
+    a = a / np.sum(a)
+    return a
+
+
 def conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):
     with tf.variable_scope(scope):
         strides = [4, 2, 1]
@@ -50,7 +57,7 @@ def hidden_layers(inputs, scope, size, use_ln=False, use_bn=False, training=Fals
                         h, center=True, scale=True)
                 elif use_bn:
                     h = tf.layers.batch_normalization(
-                        h, training=training, name='batch_norm', renorm=True)
+                        h, training=training, name='batch_norm')
                 h = tf.nn.relu(h, name='relu')
                 inputs = h
     return inputs
