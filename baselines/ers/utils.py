@@ -108,8 +108,10 @@ def tf_deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, init_sca
                              hidden_size, use_ln=use_ln, use_bn=use_bn, training=training)
         if output_shape is not None:
             output_size = reduce(mul, output_shape, 1)
-            final_flat = tf.layers.dense(h, output_size, kernel_initializer=tf.random_uniform_initializer(
-                minval=-init_scale, maxval=init_scale), name='output_flat')
+            # final_flat = tf.layers.dense(h, output_size, kernel_initializer=tf.random_uniform_initializer(
+            #     minval=-init_scale, maxval=init_scale), name='output_flat')
+            final_flat = tf.layers.dense(h, output_size, kernel_initializer=tf.orthogonal_initializer(
+                gain=init_scale), name='output_flat')
             final = tf.reshape(
                 final_flat, [-1] + list(output_shape), name='output')
         else:
