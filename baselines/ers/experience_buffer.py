@@ -34,8 +34,8 @@ class ExperienceBuffer:
     def add(self, exp: Experience):
         if self.count == 0:
             if self.size_in_bytes is not None:
-                self.buffer_length = int(
-                    self.size_in_bytes / sys.getsizeof(exp))
+                self.buffer_length = self.size_in_bytes / sys.getsizeof(exp)
+            self.buffer_length = int(self.buffer_length)
             logger.log('Initializing experience buffer of length {0}'.format(
                 self.buffer_length))
             self.buffer = [None] * self.buffer_length

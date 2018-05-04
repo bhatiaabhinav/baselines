@@ -184,7 +184,8 @@ class FrameStack(gym.Wrapper):
     def __init__(self, env, k=3):
         """Buffer observations and stack across channels (last axis)."""
         gym.Wrapper.__init__(self, env)
-        self.k = FrameStack.k
+        k = FrameStack.k
+        self.k = k
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
         # assert shp[2] == 1  # can only stack 1-channel frames

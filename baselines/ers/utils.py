@@ -13,7 +13,7 @@ from keras.models import Sequential
 from keras.optimizers import Adam
 
 from baselines import logger
-from baselines.a2c.utils import conv, conv_to_fc, fc
+from baselines.a2c.utils import conv, conv_to_fc
 
 
 def normalize(a, epsilon=1e-6):
@@ -23,7 +23,38 @@ def normalize(a, epsilon=1e-6):
     return a
 
 
-def conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):
+def mutated_ers(alloc, max_mutations=2, mutation_rate=0.05):
+    a = alloc.copy()
+    for i in range(np.random.randint(1, max_mutations + 1)):
+        src = np.random.randint(0, len(alloc))
+        dst = np.random.randint(0, len(alloc))
+        a[src] -= mutation_rate
+        a[dst] += mutation_rate
+    return normalize(a)
+
+
+def mutated_gaussian(alloc, max_mutations=2, mutation_rate=0.05):
+    a = alloc.copy()
+    for i in range(np.random.randint(1, max_mutations + 1)):
+        a = a + np.random.standard_normal(size=np.shape(a))
+    a = np.clip(a, -1, 1)
+    return a
+
+
+def tf_log_transform(inputs, max_x, t, scope, is_input_normalized=True):
+    with tf.variable_scope(scope):
+        x = max_x * inputs
+        return tf.log(1 + x / t) / tf.log(1 + max_x / t)
+
+
+def tf_safe_softmax(inputs, scope):
+    with tf.variable_scope(scope):
+        exp = tf.exp(inputs - tf.reduce_max(inputs,
+                                            axis=-1, keep_dims=True, name='max'))
+        return exp / tf.reduce_sum(exp, axis=-1, keep_dims=True, name='sum')
+
+
+def tf_conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):
     with tf.variable_scope(scope):
         strides = [4, 2, 1]
         nfs = [32, 32, 64]
@@ -47,11 +78,11 @@ def conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, trainin
     return flat
 
 
-def hidden_layers(inputs, scope, size, use_ln=False, use_bn=False, training=False):
+def tf_hidden_layers(inputs, scope, size, use_ln=False, use_bn=False, training=False):
     with tf.variable_scope(scope):
         for i in range(len(size)):
             with tf.variable_scope('h{0}'.format(i + 1)):
-                h = fc(inputs, 'fc', size[i], act=lambda x: x)
+                h = tf.layers.dense(inputs, size[i], name='fc')
                 if use_ln:
                     h = tc.layers.layer_norm(
                         h, center=True, scale=True)
@@ -63,24 +94,24 @@ def hidden_layers(inputs, scope, size, use_ln=False, use_bn=False, training=Fals
     return inputs
 
 
-def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, init_scale=1.0, use_ln=False, use_bn=False, training=False, output_shape=None):
+def tf_deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, init_scale=1.0, use_ln=False, use_bn=False, training=False, output_shape=None):
     conv_needed = len(inputs_shape) > 1
     with tf.variable_scope(scope):
         if conv_needed:
             inp = tf.divide(tf.cast(inputs, tf.float32, name='cast_to_float'), 255., name='divide_by_255') \
                 if inputs_dtype == 'uint8' else inputs
-            flat = conv_layers(inp, inputs_shape,
-                               'conv_layers', use_ln=use_ln, use_bn=use_bn, training=training)
+            flat = tf_conv_layers(inp, inputs_shape,
+                                  'conv_layers', use_ln=use_ln, use_bn=use_bn, training=training)
         else:
             flat = inputs
-        h = hidden_layers(flat, 'hidden_layers',
-                          hidden_size, use_ln=use_ln, use_bn=use_bn, training=training)
+        h = tf_hidden_layers(flat, 'hidden_layers',
+                             hidden_size, use_ln=use_ln, use_bn=use_bn, training=training)
         if output_shape is not None:
             output_size = reduce(mul, output_shape, 1)
-            final_flat = fc(h, 'output_flat', nh=output_size,
-                            act=lambda x: x, init_scale=init_scale)
+            final_flat = tf.layers.dense(h, output_size, kernel_initializer=tf.random_uniform_initializer(
+                minval=-init_scale, maxval=init_scale), name='output_flat')
             final = tf.reshape(
-                final_flat, [-1] + output_shape, name='output')
+                final_flat, [-1] + list(output_shape), name='output')
         else:
             final = h
         return final
@@ -111,7 +142,7 @@ class Model:
         raise NotImplementedError()
 
 
-class FFNN(Model):
+class FFNN_TF(Model):
     def __init__(self, tf_session: tf.Session, scope, input_shape, input_dtype, output_shape, hidden_size, init_scale=1.0, use_ln=False, use_bn=False, lr=1e-3, l2_reg=1e-2, clip_norm=None):
         super().__init__()
         self.session = tf_session
@@ -121,23 +152,23 @@ class FFNN(Model):
                     dtype=input_dtype, shape=[None] + input_shape, name='input')
                 self.is_training = tf.placeholder(
                     dtype=tf.bool, name='is_training')
-                self.outputs = deep_net(
+                self.outputs = tf_deep_net(
                     self.inputs, input_shape, input_dtype, 'hidden_layers_and_output', hidden_size,
                     output_shape=output_shape, init_scale=init_scale,
                     use_ln=use_ln, use_bn=use_bn, training=self.is_training)
-            with tf.name_scope('optimizer'):
+            with tf.variable_scope('optimizer'):
                 self.optimizer = tf.train.AdamOptimizer(learning_rate=lr)
-            with tf.name_scope('optimization_ops'):
+            with tf.variable_scope('optimization_ops'):
                 self.trainable_vars = tf.get_collection(
                     tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
                 self.targets = tf.placeholder(
                     dtype='float32', shape=[None] + output_shape)
                 se = tf.square(self.outputs - self.targets)
                 self.mse = tf.reduce_mean(se)
-                with tf.name_scope('L2_Losses'):
+                with tf.variable_scope('L2_Losses'):
                     l2_loss = 0
                     for var in self.trainable_vars:
-                        if 'bias' not in var.name:
+                        if 'bias' not in var.name and 'output' not in var.name:
                             l2_loss += l2_reg * tf.nn.l2_loss(var)
                     self.loss = self.mse + l2_loss
                 update_ops = tf.get_collection(
@@ -145,12 +176,12 @@ class FFNN(Model):
                 with tf.control_dependencies(update_ops):
                     self.grads = tf.gradients(self.loss, self.trainable_vars)
                     if clip_norm is not None:
-                        self.grads, self.norm = tf.clip_by_global_norm(
-                            self.grads, clip_norm=clip_norm)
+                        self.grads = [tf.clip_by_norm(
+                            grad, clip_norm=clip_norm) for grad in self.grads]
                     self.train_op = self.optimizer.apply_gradients(
                         list(zip(self.grads, self.trainable_vars)))
 
-            with tf.name_scope('saving_loading_ops'):
+            with tf.variable_scope('saving_loading_ops'):
                 # for saving and loading
                 self.params = tf.get_collection(
                     tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)

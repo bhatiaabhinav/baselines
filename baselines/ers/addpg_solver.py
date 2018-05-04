@@ -16,212 +16,235 @@ from baselines.common.atari_wrappers import (BreakoutContinuousActionWrapper,
                                              ClipRewardEnv, EpisodicLifeEnv,
                                              FireResetEnv, FrameStack, MaxEnv,
                                              NoopResetEnv, SkipAndFrameStack,
-                                             WarpFrame)
-from baselines.ers.addpg_ac_model import Actor
-from baselines.ers.analysis import analyse_q
+                                             SkipEnv, WarpFrame)
+from baselines.ers.addpg_ac_model import DDPG_Model
+# from baselines.ers.analysis import analyse_q
 from baselines.ers.experience_buffer import Experience, ExperienceBuffer
 from baselines.ers.noise import NormalNoise  # noqa: F401
 from baselines.ers.noise import OrnsteinUhlenbeckActionNoise
-from baselines.ers.utils import normalize
-from baselines.ers.wrappers import (CartPoleWrapper, ERSEnvImWrapper,
-                                    ERSEnvWrapper)
+from baselines.ers.utils import mutated_ers, mutated_gaussian, normalize
+from baselines.ers.wrappers import (ActionSpaceNormalizeWrapper,
+                                    CartPoleWrapper, ERSEnvImWrapper,
+                                    ERSEnvWrapper, LinearFrameStackWrapper)
 
 
-def test_actor_on_env(sess, env_id, wrappers, learning=False, actor=None, seed=0, learning_env_seed=0,
-                      test_env_seed=42, learning_episodes=40000, test_episodes=100, exploration_episodes=10, train_every=4,
-                      mb_size=64, use_safe_noise=False, replay_memory_size_in_bytes=2 * 2**30, use_param_noise=False, init_scale=1e-3,
-                      Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, pre_training_steps=0,
-                      gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001,
-                      render=False, render_mode='human', render_fps=60, save_path=None, load_path=None, **kwargs):
+def get_action(model: DDPG_Model, obs, env: gym.Env, action_noise, use_param_noise, exploit_mode, normalize_action, log, f):
+    if not use_param_noise or exploit_mode:
+        # get exploitative action
+        if log:
+            if model.main.advantage_learning:
+                a, V, A, Q = model.main.get_a_V_A_Q([obs])
+                a, V, A, Q = a[0], V[0], A[0], Q[0]
+                model.summaries.write_summaries(
+                    {'frame_A': A, 'frame_Q': Q}, f)
+            else:
+                a, Q = model.main.get_a_Q([obs])
+                a, Q = a[0], Q[0]
+                model.summaries.write_summaries({'frame_Q': Q}, f)
+        else:
+            a = model.main.get_a([obs])[0]
+    if not exploit_mode:
+        if use_param_noise:
+            a = model.noisy.get_a([obs])[0]
+        else:
+            a += action_noise()
+            if normalize_action:
+                a = normalize(a)
+            else:
+                a = np.clip(a, -1, 1)
+                a = env.action_space.low + \
+                    (env.action_space.high - env.action_space.low) * (a + 1) / 2
+    return a
+
+
+def train(model: DDPG_Model, experience_buffer: ExperienceBuffer, global_frame_index, mb_size, gamma, double_Q_learning=False, advantage_learning=False, hard_update_target=False, train_every=1, tau=0.001, log=False):
+    mb = list(experience_buffer.random_experiences(
+        count=mb_size))  # type: List[Experience]
+    s, a, s_next, r, d = [e.state for e in mb], [e.action for e in mb], [
+        e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
+    ɣ = (1 - d) * gamma
+
+    if not double_Q_learning:
+        # Single Q learning:
+        if advantage_learning:
+            # A(s,a) <- r + ɣ * max[_Q(s_next, _)] - max[_Q(s, _)]
+            # V(s) <- max[_Q(s, _)]
+            old_max_Q_s = model.target.max_Q(s)
+            adv_s_a = r + ɣ * model.target.max_Q(s_next) - old_max_Q_s
+            v_s = old_max_Q_s
+        else:
+            # Q(s,a) <- r + ɣ * max[_Q(s_next, _)]
+            q_s_a = r + ɣ * model.target.max_Q(s_next)
+    else:
+        if advantage_learning:
+            # Double Q learning:
+            # A(s,a) <- r + ɣ * _Q(s_next, argmax[Q(s_next, _)]) - _Q(s, argmax(s, _))
+            # V(s) <- _Q(s, argmax[Q(s, _)])
+            old_Q_s1_argmax_Q_s1 = model.target.Q(
+                s_next, model.main.argmax_Q(s_next))
+            old_Q_s_argmax_Q_s = model.target.Q(model.main.argmax_Q(s))
+            adv_s_a = r + ɣ * old_Q_s1_argmax_Q_s1 - old_Q_s_argmax_Q_s
+            v_s = old_Q_s_argmax_Q_s
+        else:
+            # Q <- r + ɣ * _Q(s_next, argmax[Q(s_next, _)])
+            q_s_a = r + ɣ * \
+                model.target.Q(s_next, model.main.argmax_Q(s_next))
+
+    if advantage_learning:
+        _, A_mse = model.main.train_A(states=s, actions=a, target_A=adv_s_a)
+        _, V_mse = model.main.train_V(s, v_s)
+        _, av_max_A = model.main.train_a(s)
+    else:
+        _, Q_mse = model.main.train_Q(states=s, actions=a, target_Q=q_s_a)
+        _, av_max_Q = model.main.train_a(s)
+
+    f = global_frame_index
+    if hard_update_target:
+        if f % int(train_every / tau) == 0:  # every train_every/tau steps
+            model.target.update_from_main_network()
+    else:
+        model.target.soft_update_from_main_network()
+
+    if log:
+        if advantage_learning:
+            model.summaries.write_summaries({
+                'A_mse': A_mse,
+                'V_mse': V_mse,
+                'av_max_A': av_max_A
+            }, f)
+        else:
+            model.summaries.write_summaries({
+                'Q_mse': Q_mse,
+                'av_max_Q': av_max_Q
+            }, f)
+
+
+def ga_optimize_action(model: DDPG_Model, s, a_start, generations, population_size, truncation_size, mutation_fn, mutation_rate):
+    cur_gen, prev_gen = [None] * population_size, [None] * population_size
+    for g in range(generations):
+        for idx in range(population_size):
+            if g == 0:
+                if idx == 0:
+                    cur_gen[idx] = a_start
+                else:
+                    cur_gen[idx] = mutation_fn(
+                        a_start, mutation_rate=mutation_rate)
+            else:
+                if idx == 0:
+                    # for elitism. i.e. leave the top parent unmodified
+                    cur_gen[idx] = prev_gen[idx]
+                else:
+                    # select parent from idx [0, T)
+                    parent_idx = np.random.randint(0, truncation_size)
+                    cur_gen[idx] = mutation_fn(
+                        prev_gen[parent_idx], mutation_rate=mutation_rate)
+        # eval the generation:
+        fitness = model.main.Q([s] * population_size, cur_gen)
+        # sort the population in decreasing order by fitness
+        cur_gen = [a for a, q in sorted(
+            zip(cur_gen, fitness), key=lambda pair:pair[1], reverse=True)]
+        prev_gen = cur_gen
+        cur_gen = [None] * population_size
+    return prev_gen[0]
+
+
+def ga_optimize_actor(model: DDPG_Model, states, mutation_fn, mutation_rate, train_steps=1000):
+    s = states
+    a = model.main.argmax_Q(s)
+    discovered_best_a = []
+    new_discoveries_count = 0
+    batch_size = len(states)
+    for idx in range(batch_size):
+        _s = s[idx]
+        _a = a[idx]
+        _discovered_best_a = ga_optimize_action(
+            _s, _a, generations=4, population_size=64, truncation_size=16, mutation_fn=mutation_fn, mutation_rate=mutation_rate)
+        discovered_best_a.append(_discovered_best_a)
+        if not np.array_equiv(_a, _discovered_best_a):
+            new_discoveries_count += 1
+    logger.logkv('new a discoveries', new_discoveries_count)
+    for step in range(train_steps):
+        model.main.train_a_supervised(s, discovered_best_a)
+
+
+def reset_noise(model: DDPG_Model, noise, use_param_noise, use_safe_noise, experience_buffer: ExperienceBuffer, mb_size, episode_no):
+    if use_param_noise:
+        if len(experience_buffer) >= mb_size:
+            mb_states = experience_buffer.random_states(mb_size)
+            if use_safe_noise:
+                model.noisy.noisy_update_from_main_network(
+                    model.noisy.generate_safe_noise(mb_states))
+            else:
+                model.noisy.noisy_update_from_main_network(
+                    model.noisy.generate_normal_param_noise())
+            divergence = model.noisy.get_divergence(mb_states)
+            logger.logkv('Exploration Divergence', divergence)
+            model.summaries.write_summaries(
+                {'divergence': divergence}, episode_no)
+            model.noisy.adapt_sigma(divergence)
+        else:
+            model.noisy.noisy_update_from_main_network(
+                model.noisy.generate_normal_param_noise())
+        model.summaries.write_summaries(
+            {'adaptive_sigma': model.noisy.adaptive_sigma}, episode_no)
+    else:
+        noise.reset()
+
+
+def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed=0, learning_env_seed=0,
+         test_env_seed=42, learning_episodes=40000, test_episodes=100, exploration_episodes=10, train_every=1,
+         mb_size=64, use_safe_noise=False, replay_buffer_length=1e6, replay_memory_size_in_bytes=None, use_param_noise=False, init_scale=1e-3, reward_scaling=1, Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, exploit_every=10,
+         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, save_path=None, load_path=None, **kwargs):
     np.random.seed(seed)
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
         env = W(env)  # type: gym.Wrapper
     if actor is None:
-        if 'ERS' in env_id:
-            kwargs = dict(kwargs, softmax_actor=True,
-                          log_transform_max_x=env.metadata['nambs'], log_transform_t=env.metadata['log_transform_alloc_t'])
-        actor = Actor(sess, 'actor', env.observation_space.shape,
-                      env.action_space.shape, **kwargs)
+        sys_args_dict["ob_shape"] = env.observation_space.shape
+        sys_args_dict["ac_shape"] = env.action_space.shape
+        sys_args_dict["log_transform_max_x"] = env.metadata.get('nambs', None)
+        sys_args_dict["log_transform_t"] = env.metadata.get(
+            'log_transform_alloc_t', None)
+        model = DDPG_Model(sess, use_param_noise, sys_args_dict)
         sess.run(tf.global_variables_initializer())
+        model.summaries.setup_scalar_summaries(['V_mse', 'A_mse', 'Q_mse', 'av_max_A', 'av_max_Q',
+                                                'frame_Q', 'frame_A', 'R', 'ep_length', 'R_exploit', 'blip_R_exploit', 'divergence', 'adaptive_sigma'])
+        model.summaries.setup_histogram_summaries(['V', 'A', 'Q'])
     if load_path:
         try:
-            actor.load(load_path)
+            model.main.load(load_path)
             logger.log('model loaded')
         except Exception as ex:
             logger.log('Failed to load model. Reason = {0}'.format(
                 ex), level=logger.ERROR)
-    actor.update_target_networks()
+    model.target.update_from_main_network()
     if learning:
         experience_buffer = ExperienceBuffer(
-            size_in_bytes=replay_memory_size_in_bytes)
-        if use_param_noise:
-            adaptive_sigma = init_scale
-        else:
-            noise = Noise_type(mu=np.zeros(env.action_space.shape),
-                               sigma=exploration_sigma, theta=exploration_theta)
+            length=replay_buffer_length, size_in_bytes=replay_memory_size_in_bytes)
+        noise = None if use_param_noise else Noise_type(mu=np.zeros(
+            env.action_space.shape), sigma=exploration_sigma, theta=exploration_theta)
 
-    def Q(s, a):
-        return actor.get_V_A_Q(s, a)[2]
-
-    def max_Q(s):
-        return actor.get_a_V_A_Q(s)[3]
-
-    def V(s):
-        return actor.get_a_V_A_Q(s)[1]
-
-    def A(s, a):
-        return actor.get_V_A_Q(s, a)[1]
-
-    def max_A(s):
-        return actor.get_a_V_A_Q(s)[2]
-
-    def argmax_Q(s):
-        return actor.get_a_V_A_Q(s)[0]
-
-    def _Q(s, a):
-        return actor.get_target_V_A_Q(s, a)[2]
-
-    def _max_Q(s):
-        return actor.get_target_a_V_A_Q(s)[3]
-
-    def _A(s, a):
-        return actor.get_target_V_A_Q(s, a)[1]
-
-    def _max_A(s):
-        return actor.get_target_a_V_A_Q(s)[2]
-
-    def _V(s):
-        return actor.get_target_a_V_A_Q(s)[1]
-
-    def _argmax_Q(s):
-        return actor.get_target_a_V_A_Q(s)[0]
-
-    def train(pre_train=False):
-        count = max(pre_training_steps if pre_train else 1, 1)
-        for c in range(count):
-            mb = list(experience_buffer.random_experiences(
-                count=mb_size))  # type: List[Experience]
-            s, a, s_next, r, d = [e.state for e in mb], [e.action for e in mb], [
-                e.next_state for e in mb], np.asarray([e.reward for e in mb]), np.asarray([int(e.done) for e in mb])
-            ɣ = (1 - d) * gamma
-
-            if not double_Q_learning:
-                # Single Q learning:
-                if advantage_learning:
-                    # A(s,a) <- r + ɣ * max[_Q(s_next, _)] - max[_Q(s, _)]
-                    # V(s) <- max[_Q(s, _)]
-                    old_max_Q_s = _max_Q(s)
-                    adv_s_a = r + ɣ * _max_Q(s_next) - old_max_Q_s
-                    v_s = old_max_Q_s
-                else:
-                    # Q(s,a) <- r + ɣ * max[_Q(s_next, _)]
-                    # A function to act like Q now
-                    adv_s_a = r + ɣ * _max_Q(s_next)
-                    v_s = 0  # set V to zero
-            else:
-                if advantage_learning:
-                    # Double Q learning:
-                    # A(s,a) <- r + ɣ * _Q(s_next, argmax[Q(s_next, _)]) - _Q(s, argmax(s, _))
-                    # V(s) <- _Q(s, argmax[Q(s, _)])
-                    old_Q_s1_argmax_Q_s1 = _Q(s_next, argmax_Q(s_next))
-                    old_Q_s_argmax_Q_s = _Q(s, argmax_Q(s))
-                    adv_s_a = r + ɣ * old_Q_s1_argmax_Q_s1 - old_Q_s_argmax_Q_s
-                    v_s = old_Q_s_argmax_Q_s
-                else:
-                    # Q <- r + ɣ * _Q(s_next, argmax[Q(s_next, _)])
-                    # A function to act like Q now
-                    adv_s_a = r + ɣ * _Q(s_next, argmax_Q(s_next))
-                    v_s = 0  # set V to zero
-
-            _, A_mse, A_mse_summary, A_summary = actor.train_A(
-                s, adv_s_a, actions=a)
-            if advantage_learning:
-                _, V_mse, V_mse_summary, V_summary = actor.train_V(s, v_s)
-            else:
-                V_mse = 0
-
-        _, av_max_A, av_max_A_summary = actor.train_a(s)
-
-        if hard_update_target:
-            if f % int(train_every / tau) == 0:  # every train_every/tau steps
-                actor.update_target_networks()
-        else:
-            actor.soft_update_target_networks()
-
-        if f % 100 == 0:
-            logger.log('mb_V_mse: {0}\tmb_Av_V: {1}\tmb_A_mse: {2}\tmb_Av_A: {3}\tmb_Av_max_A: {4}'.format(
-                V_mse, np.average(v_s), A_mse, np.average(adv_s_a), av_max_A))
-            actor.writer.add_summary(A_mse_summary, f)
-            actor.writer.add_summary(A_summary, f)
-            if advantage_learning:
-                actor.writer.add_summary(V_mse_summary, f)
-                actor.writer.add_summary(V_summary, f)
-            actor.writer.add_summary(av_max_A_summary, f)
-
-    def act(obs):
-        if not use_param_noise or no_explore:
-            a, value, adv, q, A_summary, Q_summary = actor.get_a_V_A_Q([obs])
-            a, value, adv, q = a[0], value[0], adv[0], q[0]
-        if not no_explore:
-            if use_param_noise:
-                a = actor.get_noisy_a([obs])[0]
-            else:
-                a += noise()
-                if 'ERS' in env_id:
-                    a = normalize(a)
-                else:
-                    a = env.action_space.high * np.clip(a, -1, 1)
-        if not use_param_noise or no_explore:
-            logger.log('ep_f: {0}\tA: {1}\tQ: {2}'.format(
-                ep_l, adv, q), level=logger.DEBUG)
-            if f % 100 == 0:
-                actor.writer.add_summary(A_summary, f)
-                actor.writer.add_summary(Q_summary, f)
-        return a
-
-    Rs, no_explore_Rs, no_explore_blip_Rs, f = [], [], [], 0
+    Rs, exploit_Rs, exploit_blip_Rs, f = [], [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
-    pre_train = True
     for ep in range(learning_episodes if learning else test_episodes):
         obs, d, R, blip_R, ep_l = env.reset(), False, 0, 0, 0
-        no_explore = (ep % 2 == 0) or not learning
-        if not no_explore:
-            if use_param_noise:
-                if len(experience_buffer) >= mb_size:
-                    mb_states = experience_buffer.random_states(mb_size)
-                    if use_safe_noise:
-                        actor.update_noisy_actor(
-                            param_noise=actor.generate_safe_noise(adaptive_sigma, mb_states))
-                    else:
-                        actor.update_noisy_actor(
-                            param_noise=actor.generate_normal_param_noise(adaptive_sigma))
-                    divergence = actor.get_divergence_noisy_actor(mb_states)
-                    logger.logkv('Exploitation Divergence', divergence)
-                    actor.writer.add_summary(actor.divergence_summary.eval(
-                        feed_dict={actor.divergence_placeholder: divergence}), ep)
-                    multiplier = 1 + abs(divergence - exploration_sigma)
-                    if divergence < exploration_sigma:
-                        adaptive_sigma = adaptive_sigma * multiplier
-                    else:
-                        adaptive_sigma = adaptive_sigma / multiplier
-                else:
-                    adaptive_sigma = init_scale
-                    actor.update_noisy_actor(
-                        param_noise=actor.generate_normal_param_noise(adaptive_sigma))
-
-                logger.logkv('Adaptive Sigma', adaptive_sigma)
-                actor.writer.add_summary(actor.adaptive_sigma_summary.eval(
-                    feed_dict={actor.adaptive_sigma_placeholder: adaptive_sigma}), ep)
-
-            else:
-                noise.reset()
+        exploit_mode = (ep % exploit_every == 0) or not learning
+        if not exploit_mode:
+            reset_noise(model, noise, use_param_noise, use_safe_noise,
+                        experience_buffer, mb_size, ep)
         while not d:
+            should_log = (f % log_every == 0)
             if learning and ep >= exploration_episodes and f % train_every == 0:
-                train(pre_train=pre_train)
-                pre_train = False
-            a = act(obs)
+                train(model, experience_buffer, f, mb_size, gamma, double_Q_learning=double_Q_learning,
+                      advantage_learning=advantage_learning, hard_update_target=hard_update_target, train_every=train_every, tau=tau, log=should_log)
+                if use_ga_optimization and f % (50 * train_every) == 0:
+                    mutation_fn = mutated_ers if 'ERS' in env_id else mutated_gaussian
+                    ga_optimize_actor(model, experience_buffer.random_states(
+                        mb_size), mutation_fn, exploration_sigma, train_steps=100)
+            a = get_action(model=model, obs=obs, env=env, action_noise=noise,
+                           use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action='ERS' in env_id, log=should_log, f=f)
             obs_, r, d, _ = env.step(a)
+            r = r * reward_scaling
             if render:
                 env.render(mode=render_mode)
                 if render_fps is not None:
@@ -231,64 +254,57 @@ def test_actor_on_env(sess, env_id, wrappers, learning=False, actor=None, seed=0
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
             if 'blip_reward' in _:
                 blip_R += _['blip_reward']
+        R = R / reward_scaling
         Rs.append(R)
-        if no_explore:
-            no_explore_Rs.append(R)
-            no_explore_blip_Rs.append(blip_R)
-        logger.logkvs({
-            'Episode': ep,
-            'Reward': R,
-            'Exploited': no_explore,
-            'Blip_Reward': blip_R,
-            'Length': ep_l,
-            'Average Reward': np.average(Rs[-100:]),
-            'Exploit Average Reward': np.average(no_explore_Rs[-100:]),
-            'Exploit Average Blip Reward': np.average(no_explore_blip_Rs[-100:])
-        })
+        if exploit_mode:
+            exploit_Rs.append(R)
+            exploit_blip_Rs.append(blip_R)
+        logger.logkvs({'Episode': ep, 'Reward': R, 'Exploited': exploit_mode, 'Blip_Reward': blip_R, 'Length': ep_l, 'Average Reward': np.average(
+            Rs[-100:]), 'Exploit Average Reward': np.average(exploit_Rs[-100:]), 'Exploit Average Blip Reward': np.average(exploit_blip_Rs[-100:])})
         logger.dump_tabular()
-        score_summary = actor.score_summary.eval(
-            feed_dict={actor.R_placeholder: Rs[-1], actor.R_exploit_placeholder: no_explore_Rs[-1],
-                       actor.blip_R_exploit_placeholder: no_explore_blip_Rs[-1]})
-        actor.writer.add_summary(score_summary, ep)
-        if save_path and ep % 50 == 0:
-            actor.save(save_path)
+        model.summaries.write_summaries(
+            {'R': R, 'R_exploit': exploit_Rs[-1], 'blip_R_exploit': exploit_blip_Rs[-1], 'ep_length': ep_l}, ep)
+        if save_path and ep % save_every == 0:
+            model.main.save(save_path)
             logger.log('model saved')
     env.close()
     logger.log('Average reward per episode: {0}'.format(np.average(Rs)))
     logger.log('Exploitation average reward per episode: {0}'.format(
-        np.average(no_explore_Rs)))
-    return actor
+        np.average(exploit_Rs)))
+    return model
 
 
-def main(seed=0, learning_env_seed=0, test_env_seed=42, test_mode=False, analysis_mode=False, save_path=None, load_path=None, **kwargs):
+def main(sys_args_dict, seed=0, learning_env_seed=0, test_env_seed=42, test_mode=False, analysis_mode=False, save_path=None, load_path=None, **kwargs):
     with tf.Session() as sess:
         if not (test_mode or analysis_mode):
             logger.log('Training actor. seed={0}. learning_env_seed={1}'.format(
                 seed, learning_env_seed))
-            actor = test_actor_on_env(
-                sess, learning=True, actor=None, **kwargs)
-            actor.save(save_path)
+            model = ddpg(
+                sys_args_dict, sess, learning=True, actor=None, **sys_args_dict)
+            model.main.save(save_path)
             logger.log(
                 'Testing actor. test_env_seed={0}'.format(test_env_seed))
-            test_actor_on_env(sess, learning=False, actor=actor,
-                              **dict(kwargs, save_path=None, load_path=None))
+            ddpg(sys_args_dict, sess, learning=False, actor=model,
+                 **dict(sys_args_dict, save_path=None, load_path=None))
             logger.log('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
                 seed, learning_env_seed, test_env_seed))
-            logger.log('Analysing model')
-            analyse_q(sess, actor=actor, **dict(kwargs, load_path=None))
-            logger.log("Analysis done. Results saved to logdir.")
+            # logger.log('Analysing model')
+            # analyse_q(sys_args_dict, sess, actor=actor, **
+            #           dict(sys_args_dict, load_path=None))
+            # logger.log("Analysis done. Results saved to logdir.")
         if test_mode:
             logger.log(
                 'Testing actor. test_env_seed={0}'.format(test_env_seed))
             assert load_path is not None, "Please provide a saved model"
-            test_actor_on_env(sess, learning=False, **
-                              dict(kwargs, save_path=None))
+            ddpg(sys_args_dict, sess, learning=False, **
+                 dict(sys_args_dict, save_path=None))
             logger.log('Testing done. Seeds were seed={0}. learning_env_seed={1}. test_env_seed={2}'.format(
                 seed, learning_env_seed, test_env_seed))
         if analysis_mode:
             logger.log('Analysing model')
             assert load_path is not None, "Please provide a saved model"
-            analyse_q(sess, actor=None, **kwargs)
+            # analyse_q(sys_args_dict, sess, actor=None, **sys_args_dict)
+            raise NotImplementedError()
             logger.log("Analysis done. Results saved to logdir.")
 
         logger.log('-------------------------------------------------\n')
@@ -304,8 +320,12 @@ if __name__ == '__main__':
     kwargs = vars(args).copy()
     kwargs['env_id'] = args.env
     kwargs['wrappers'] = []
-    kwargs['replay_memory_size_in_bytes'] = args.replay_memory_gigabytes * 2**30
+    if args.replay_memory_gigabytes is not None:
+        kwargs['replay_memory_size_in_bytes'] = args.replay_memory_gigabytes * 2**30
+    else:
+        kwargs['replay_memory_size_in_bytes'] = None
     kwargs['Noise_type'] = OrnsteinUhlenbeckActionNoise
+    kwargs['target_divergence'] = args.exploration_sigma
     kwargs['learning_env_seed'] = args.seed
     kwargs['learning_episodes'] = args.training_episodes
     kwargs['test_env_seed'] = args.test_seed
@@ -315,13 +335,22 @@ if __name__ == '__main__':
     kwargs['load_path'] = args.saved_model
     ERSEnvWrapper.k = args.nstack
     FrameStack.k = args.nstack
+    LinearFrameStackWrapper.k = args.nstack
     if 'ERSEnv-ca' in kwargs['env_id']:
         kwargs['wrappers'] = [ERSEnvWrapper]
+        kwargs['softmax_actor'] = True
     elif 'ERSEnv-im' in kwargs['env_id']:
         kwargs['wrappers'] = [ERSEnvImWrapper]
+        kwargs['softmax_actor'] = True
     elif 'Pole' in kwargs['env_id']:
         kwargs['wrappers'] = [CartPoleWrapper]
     elif 'NoFrameskip' in kwargs['env_id']:
         kwargs['wrappers'] = [EpisodicLifeEnv, NoopResetEnv, MaxEnv, FireResetEnv,
                               WarpFrame, SkipAndFrameStack, ClipRewardEnv, BreakoutContinuousActionWrapper]
-    main(**kwargs)
+    elif 'CarRacing' in kwargs['env_id']:
+        kwargs['wrappers'] = [SkipEnv, WarpFrame,
+                              FrameStack, ActionSpaceNormalizeWrapper]
+    else:
+        kwargs['wrappers'] = [LinearFrameStackWrapper,
+                              ActionSpaceNormalizeWrapper]
+    main(kwargs, **kwargs)

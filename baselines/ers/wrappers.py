@@ -19,6 +19,53 @@ class CartPoleWrapper(gym.Wrapper):
         return super().step(a)
 
 
+class ActionSpaceNormalizeWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self._ac_low = self.action_space.low
+        self._ac_high = self.action_space.high
+        self.action_space = gym.spaces.Box(
+            -1, 1, shape=self.env.action_space.shape, dtype=np.float32)
+
+    def step(self, action):
+        action = np.clip(action, -1, 1)
+        action_correct = self._ac_low + \
+            (self._ac_high - self._ac_low) * (action + 1) / 2
+        return super().step(action_correct)
+
+
+class LinearFrameStackWrapper(gym.Wrapper):
+    k = 3
+
+    def __init__(self, env, k=3):
+        super().__init__(env)
+        k = LinearFrameStackWrapper.k
+        self.k = k
+        self.frames = deque([], maxlen=k)
+        space = env.observation_space  # type: gym.spaces.Box
+        assert len(space.shape) == 1  # can only stack 1-D frames
+        self.observation_space = gym.spaces.Box(
+            low=np.array(list(space.low) * k), high=np.array(list(space.high) * k))
+
+    def _reset(self):
+        """Clear buffer and re-fill by duplicating the first observation."""
+        ob = self.env.reset()
+        for _ in range(self.k):
+            self.frames.append(ob)
+        return self._observation()
+
+    def _step(self, action):
+        ob, reward, done, info = self.env.step(action)
+        self.frames.append(ob)
+        return self._observation(), reward, done, info
+
+    def _observation(self):
+        assert len(self.frames) == self.k
+        obs = np.concatenate(self.frames, axis=0)
+        assert list(np.shape(obs)) == list(self.observation_space.shape)
+        return obs
+
+
 class DiscreteToContinousWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)

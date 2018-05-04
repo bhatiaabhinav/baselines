@@ -3,463 +3,542 @@ import os
 import joblib
 import numpy as np
 import tensorflow as tf
-import tensorflow.contrib as tc
 
 from baselines import logger
-from baselines.a2c.utils import conv, conv_to_fc, fc
+from baselines.ers.utils import tf_deep_net, tf_log_transform, tf_safe_softmax
 
 
-class Actor:
-
-    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor=False, nn_size=[64, 64],
-                 ob_dtype='float32', q_lr=1e-3, a_lr=1e-4, init_scale=1e-3, use_layer_norm=False,
-                 use_batch_norm=False, use_norm_actor=True, l2_reg=1e-2, a_l2_reg=0, clip_norm=None,
-                 a_clip_norm=None, tau=0.001, log_transform_action_feed=False, log_transform_max_x=1, log_transform_t=1, **kwargs):
-        assert len(ac_shape) == 1
+class DDPG_Model_Base:
+    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor, nn_size,
+                 ob_dtype, init_scale, advantage_learning, use_layer_norm,
+                 use_batch_norm, use_norm_actor, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
+        assert len(
+            ac_shape) == 1, "Right now only flat action spaces are supported"
         self.session = session
         self.name = name
         self.ac_shape = ac_shape
-        self.tau = tau
+        self.ob_shape = ob_shape
+        self.ob_dtype = ob_dtype
+        self.nn_size = nn_size
+        self.init_scale = init_scale
+        self.use_batch_norm = use_batch_norm
+        self.use_layer_norm = use_layer_norm
+        self.use_norm_actor = use_norm_actor
+        self.log_transform_action_feed = log_transform_action_feed
+        self.log_transform_max_x = log_transform_max_x
+        self.log_transform_t = log_transform_t
+        self.softmax_actor = softmax_actor
+        self.advantage_learning = advantage_learning
+        self.DUMMY_ACTION = [np.zeros(self.ac_shape)]
 
-        def conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):
-            with tf.variable_scope(scope):
-                strides = [4, 2, 1]
-                nfs = [32, 32, 64]
-                rfs = [8, 4, 3]
-                num_convs = 3 if inputs_shape[0] >= 60 else 2
-                for i in range(3 - num_convs, 3):
-                    with tf.variable_scope('c{0}'.format(i + 1)):
-                        c = conv(
-                            inputs, 'conv', nfs[i], rfs[i], strides[i], pad='VALID', act=lambda x: x)
-                        if use_ln:
-                            # it is ok to use layer norm since we are using VALID padding. So corner neurons are OK.
-                            c = tc.layers.layer_norm(
-                                c, center=True, scale=True)
-                        elif use_bn:
-                            c = tf.layers.batch_normalization(
-                                c, training=training, name='batch_norm')
-                        c = tf.nn.relu(c, name='relu')
-                        inputs = c
-                with tf.variable_scope('conv_to_fc'):
-                    flat = conv_to_fc(inputs)
-            return flat
+    def _setup_states_feed(self):
+        self._states_feed = tf.placeholder(dtype=self.ob_dtype, shape=[
+                                           None] + list(self.ob_shape), name="states_feed")
 
-        def hidden_layers(inputs, scope, size, use_ln=False, use_bn=False, training=False):
-            with tf.variable_scope(scope):
-                for i in range(len(size)):
-                    with tf.variable_scope('h{0}'.format(i + 1)):
-                        h = fc(inputs, 'fc', size[i], act=lambda x: x)
-                        if use_ln:
-                            h = tc.layers.layer_norm(
-                                h, center=True, scale=True)
-                        elif use_bn:
-                            h = tf.layers.batch_normalization(
-                                h, training=training, name='batch_norm')
-                        h = tf.nn.relu(h, name='relu')
-                        inputs = h
-            return inputs
+    def _setup_actor(self):
+        with tf.variable_scope('model/actor'):
+            self._is_training_a = tf.placeholder(
+                dtype=tf.bool, name='is_training_a')
+            a = tf_deep_net(self._states_feed, self.ob_shape, self.ob_dtype, 'a_network', self.nn_size, use_ln=self.use_layer_norm and self.use_norm_actor,
+                            use_bn=self.use_batch_norm and self.use_norm_actor, training=self._is_training_a, output_shape=self.ac_shape)
+            a = tf_safe_softmax(
+                a, 'softmax') if self.softmax_actor else tf.nn.tanh(a, 'tanh')
+            self._use_actions_feed = tf.placeholder(
+                dtype=tf.bool, name='use_actions_feed')
+            self._actions_feed = tf.placeholder(
+                dtype=tf.float32, shape=[None] + list(self.ac_shape), name='actions_feed')
+            self._a = tf.case([
+                (self._use_actions_feed, lambda: self._actions_feed)
+            ], default=lambda: a)
 
-        def deep_net(inputs, inputs_shape, inputs_dtype, scope, hidden_size, use_ln=False, use_bn=False, training=False, output_size=None):
-            conv_needed = len(inputs_shape) > 1
-            with tf.variable_scope(scope):
-                if conv_needed:
-                    inp = tf.divide(tf.cast(inputs, tf.float32, name='cast_to_float'), 255., name='divide_by_255') \
-                        if inputs_dtype == 'uint8' else inputs
-                    flat = conv_layers(inp, inputs_shape,
-                                       'conv_layers', use_ln=use_ln, use_bn=use_bn, training=training)
+    def _setup_critic(self):
+        with tf.variable_scope('model/critic'):
+            with tf.variable_scope('A'):
+                self._is_training_critic = tf.placeholder(
+                    dtype=tf.bool, name='is_training_critic')
+                s_after_one_hidden = tf_deep_net(self._states_feed, self.ob_shape, self.ob_dtype, 'one_hidden',
+                                                 self.nn_size[0:1], use_ln=self.use_layer_norm, use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=None)
+                if self.log_transform_action_feed:
+                    a = tf_log_transform(
+                        self._a, self.log_transform_max_x, self.log_transform_t, scope='log_transform')
                 else:
-                    flat = inputs
-                h = hidden_layers(flat, 'hidden_layers',
-                                  hidden_size, use_ln=use_ln, use_bn=use_bn, training=training)
-                if output_size is not None:
-                    final = fc(h, 'output_layer', nh=output_size,
-                               act=lambda x: x, init_scale=init_scale)
-                else:
-                    final = h
-                return final
+                    a = self._a
+                s_a_concat = tf.concat(
+                    [s_after_one_hidden, a], axis=-1, name="s_a_concat")
+                self._A = tf_deep_net(s_a_concat, [self.nn_size[0] + self.ac_shape[0]], 'float32', 'A_network',
+                                      self.nn_size[1:], use_ln=self.use_layer_norm, use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=[1])[:, 0]
+            if self.advantage_learning:
+                self._V = tf_deep_net(self._states_feed, self.ob_shape, self.ob_dtype, 'V', self.nn_size, use_ln=self.use_layer_norm,
+                                      use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=[1])[:, 0]
+                self._Q = tf.add(self._V, self._A, name='Q')
+            else:
+                self._Q = self._A
 
-        def safe_softmax(inputs, scope):
-            with tf.variable_scope(scope):
-                exp = tf.exp(inputs - tf.reduce_max(inputs,
-                                                    axis=-1, keep_dims=True, name='max'))
-                return exp / tf.reduce_sum(exp, axis=-1, keep_dims=True, name='sum')
+    def _get_tf_variables(self, extra_scope=''):
+        return tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, '{0}/model/{1}'.format(self.name, extra_scope))
 
-        def log_transform(inputs, max_x, t, scope, is_input_normalized=True):
-            with tf.name_scope(scope):
-                x = max_x * inputs
-                return tf.log(1 + x / t) / tf.log(1 + max_x / t)
+    def _get_tf_trainable_variables(self, extra_scope=''):
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/model/{1}'.format(self.name, extra_scope))
 
+    def _get_tf_perturbable_variables(self, extra_scope=''):
+        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name)]
+
+    def _get_update_ops(self, extra_scope=''):
+        return tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/model/{1}'.format(self.name, extra_scope))
+
+    def get_a(self, states):
+        return self.session.run(self._a, feed_dict={
+            self._states_feed: states,
+            self._is_training_a: False,
+            self._use_actions_feed: False,
+            self._actions_feed: self.DUMMY_ACTION,
+        })
+
+    def get_a_V_A_Q(self, states):
+        return self.session.run([self._a, self._V, self._A, self._Q], feed_dict={
+            self._states_feed: states,
+            self._actions_feed: self.DUMMY_ACTION,
+            self._is_training_a: False,
+            self._use_actions_feed: False,
+            self._is_training_critic: False
+        })
+
+    def get_a_Q(self, states):
+        return self.session.run([self._a, self._Q], feed_dict={
+            self._states_feed: states,
+            self._actions_feed: self.DUMMY_ACTION,
+            self._is_training_a: False,
+            self._use_actions_feed: False,
+            self._is_training_critic: False
+        })
+
+    def get_V_A_Q(self, states, actions):
+        return self.session.run([self._V, self._A, self._Q], feed_dict={
+            self._states_feed: states,
+            self._use_actions_feed: True,
+            self._actions_feed: actions,
+            self._is_training_a: False,
+            self._is_training_critic: False
+        })
+
+    def get_Q(self, states, actions):
+        return self.session.run([self._Q], feed_dict={
+            self._states_feed: states,
+            self._use_actions_feed: True,
+            self._actions_feed: actions,
+            self._is_training_a: False,
+            self._is_training_critic: False
+        })
+
+    def Q(self, s, a):
+        return self.get_Q(s, a)
+
+    def max_Q(self, s):
+        return self.get_a_Q(s)[1]
+
+    def V(self, s):
+        return self.get_a_V_A_Q(s)[1]
+
+    def A(self, s, a):
+        return self.get_V_A_Q(s, a)[1]
+
+    def max_A(self, s):
+        return self.get_a_V_A_Q(s)[2]
+
+    def argmax_Q(self, s):
+        return self.get_a(s)
+
+
+class DDPG_Model_Main(DDPG_Model_Base):
+    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor, nn_size,
+                 ob_dtype, lr, a_lr, init_scale, advantage_learning, use_layer_norm,
+                 use_batch_norm, use_norm_actor, l2_reg, a_l2_reg, clip_norm,
+                 a_clip_norm, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
+        super().__init__(session=session, name=name, ob_shape=ob_shape, ac_shape=ac_shape, softmax_actor=softmax_actor, nn_size=nn_size, ob_dtype=ob_dtype, init_scale=init_scale, advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
+                         use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_action_feed=log_transform_action_feed, log_transform_max_x=log_transform_max_x, log_transform_t=log_transform_t)
         with tf.variable_scope(name):
-            for scope in ['original', 'target']:
-                with tf.variable_scope(scope):
-                    states_feed = tf.placeholder(dtype=ob_dtype, shape=[
-                                                 None] + list(ob_shape))
-                    if scope == 'target':
-                        self.states_feed_target = states_feed
-                    else:
-                        self.states_feed = states_feed
-                    with tf.variable_scope('actor'):
-                        is_training_a = False if scope == 'target' else tf.placeholder(
-                            dtype=tf.bool, name='is_training_a')
-                        a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network',
-                                     nn_size, use_ln=use_layer_norm and use_norm_actor, use_bn=use_batch_norm and use_norm_actor, training=is_training_a, output_size=ac_shape[0])
-                        a = safe_softmax(
-                            a, 'softmax') if softmax_actor else tf.nn.tanh(a, 'tanh')
-                        use_actions_feed = tf.placeholder(
-                            dtype=tf.bool, name='use_actions_feed')
-                        actions_feed = tf.placeholder(
-                            dtype=tf.float32, shape=[None] + list(ac_shape), name='actions_feed')
-                        a = tf.case([
-                            (use_actions_feed, lambda: actions_feed)
-                        ], default=lambda: a)
-                        if scope == 'target':
-                            self.a_target = a
-                            self.actions_feed_target = actions_feed
-                            self.use_actions_feed_target = use_actions_feed
-                        else:
-                            self.is_training_a = is_training_a
-                            self.a = a
-                            self.actions_feed = actions_feed
-                            self.use_actions_feed = use_actions_feed
-                    with tf.variable_scope('critic'):
-                        with tf.variable_scope('A'):
-                            is_training_critic = False if scope == 'target' else tf.placeholder(
-                                dtype=tf.bool, name='is_training_critic')
-                            s = deep_net(states_feed, ob_shape, ob_dtype, 'one_hidden',
-                                         nn_size[0:1], use_ln=use_layer_norm, use_bn=use_batch_norm, training=is_training_critic)
-                            if log_transform_action_feed:
-                                a = log_transform(a, log_transform_max_x, log_transform_t, scope='log_transform')
-                            s_a_concat = tf.concat(
-                                [s, a], axis=-1, name="s_a_concat")
-                            A = deep_net(s_a_concat, [nn_size[0] + ac_shape[0]], 'float32', 'A_network',
-                                         nn_size[1:], use_ln=use_layer_norm, use_bn=use_batch_norm, training=is_training_critic, output_size=1)[:, 0]
-                        V = deep_net(states_feed, ob_shape, ob_dtype, 'V', nn_size, use_ln=use_layer_norm, use_bn=use_batch_norm,
-                                     training=is_training_critic, output_size=1)[:, 0]
-                        # Q:
-                        Q = tf.add(V, A, name='Q')
-                        if scope == 'target':
-                            self.V_target, self.A_target, self.Q_target = V, A, Q
-                        else:
-                            self.V, self.A, self.Q = V, A, Q
-                            self.is_training_critic = is_training_critic
+            self._setup_states_feed()
+            self._setup_actor()
+            self._setup_critic()
+            self._setup_training(
+                a_lr=a_lr, a_l2_reg=a_l2_reg, a_clip_norm=a_clip_norm, lr=lr, l2_reg=l2_reg, clip_norm=clip_norm)
+            self._setup_saving_loading_ops()
 
-            with tf.variable_scope('noisy_actor'):
-                states_feed = tf.placeholder(dtype=ob_dtype, shape=[
-                                             None] + list(ob_shape))
-                self.states_feed_noisy_actor = states_feed
-                a = deep_net(states_feed, ob_shape, ob_dtype, 'a_network', nn_size, use_ln=use_layer_norm and use_norm_actor,
-                             use_bn=use_batch_norm and use_norm_actor, training=False, output_size=ac_shape[0])
-                a = safe_softmax(
-                    a, 'softmax') if softmax_actor else tf.nn.tanh(a, 'tanh')
-                self.a_noisy_actor = a
-                self.divergence_noisy_actor = tf.sqrt(
-                    tf.reduce_mean(tf.square(self.a - self.a_noisy_actor)))
-
-        # optimizers:
-        with tf.name_scope('optimizers'):
-            optimizer_A = tf.train.AdamOptimizer(
-                learning_rate=q_lr, name='A_adam')
-            optimizer_V = tf.train.AdamOptimizer(
-                learning_rate=q_lr, name='V_adam')
-            optimizer_a = tf.train.AdamOptimizer(
-                learning_rate=a_lr, name='actor_adam')
-
-        with tf.name_scope('optimize_actor'):
+    def _setup_actor_training(self, a_l2_reg, a_clip_norm):
+        with tf.variable_scope('optimize_actor'):
             # for training actions: maximize Advantage i.e. A
-            self.a_vars = tf.get_collection(
-                tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/actor'.format(name))
-            self.av_A = tf.reduce_mean(self.A)
-            with tf.name_scope('L2_Losses'):
-                l2_loss = 0
-                for var in self.a_vars:
-                    if 'bias' not in var.name:
-                        l2_loss += a_l2_reg * tf.nn.l2_loss(var)
-            loss = -self.av_A + l2_loss
-            update_ops = tf.get_collection(
-                tf.GraphKeys.UPDATE_OPS, scope='{0}/original/actor'.format(name))
+            self._a_vars = self._get_tf_trainable_variables('actor')
+            self._av_A = tf.reduce_mean(self._A)
+            loss = -self._av_A
+            if a_l2_reg > 0:
+                with tf.name_scope('L2_Losses'):
+                    l2_loss = 0
+                    for var in self._a_vars:
+                        if 'bias' not in var.name and 'output' not in var.name:
+                            l2_loss += a_l2_reg * tf.nn.l2_loss(var)
+                loss = loss + l2_loss
+            update_ops = self._get_update_ops('actor')
             with tf.control_dependencies(update_ops):
-                a_grads = tf.gradients(loss, self.a_vars)
+                a_grads = tf.gradients(loss, self._a_vars)
                 if a_clip_norm is not None:
-                    a_grads, norm = tf.clip_by_global_norm(
-                        a_grads, clip_norm=a_clip_norm)
-                self.train_a_op = optimizer_a.apply_gradients(
-                    list(zip(a_grads, self.a_vars)))
+                    a_grads = [tf.clip_by_norm(
+                        grad, clip_norm=a_clip_norm) for grad in a_grads]
+                self._train_a_op = self._optimizer_a.apply_gradients(
+                    list(zip(a_grads, self._a_vars)))
                 # self.train_a_op = optimizer_a.minimize(-self.av_A, var_list=self.a_vars)
 
-        with tf.name_scope('optimize_V'):
-            # for training V:
-            self.V_vars = tf.get_collection(
-                tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/V'.format(name))
-            self.V_target_feed = tf.placeholder(dtype='float32', shape=[None])
-            se = tf.square(self.V - self.V_target_feed) / 2
-            self.V_mse = tf.reduce_mean(se)
-            with tf.name_scope('L2_Losses'):
-                l2_loss = 0
-                for var in self.V_vars:
-                    if 'bias' not in var.name:
-                        l2_loss += l2_reg * tf.nn.l2_loss(var)
-                loss = self.V_mse + l2_loss
-            update_ops = tf.get_collection(
-                tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/V'.format(name))
+            # for supervised training of actions:
+            self._a_desired = tf.placeholder(dtype=tf.float32, shape=[
+                                             None] + list(self.ac_shape), name='desired_actions_feed')
+            se = tf.square(self._a - self._a_desired)
+            self._a_mse = tf.reduce_mean(se)
+            loss = self._a_mse
+            if a_l2_reg > 0:
+                loss = loss + l2_loss
             with tf.control_dependencies(update_ops):
-                V_grads = tf.gradients(loss, self.V_vars)
-                if clip_norm is not None:
-                    V_grads, norm = tf.clip_by_global_norm(
-                        V_grads, clip_norm=clip_norm)
-                self.train_V_op = optimizer_V.apply_gradients(
-                    list(zip(V_grads, self.V_vars)))
-                # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
+                a_grads = tf.gradients(loss, self._a_vars)
+                if a_clip_norm is not None:
+                    a_grads = [tf.clip_by_norm(
+                        grad, clip_norm=a_clip_norm) for grad in a_grads]
+                self._train_a_supervised_op = self._optimizer_a_supervised.apply_gradients(
+                    list(zip(a_grads, self._a_vars)))
 
-        with tf.name_scope('optimize_A'):
+    def _setup_critic_training(self, l2_reg, clip_norm):
+        if self.advantage_learning:
+            with tf.variable_scope('optimize_V'):
+                # for training V:
+                self._V_vars = self._get_tf_trainable_variables('critic/V')
+                self._V_target_feed = tf.placeholder(
+                    dtype='float32', shape=[None])
+                se = tf.square(self._V - self._V_target_feed)
+                self._V_mse = tf.reduce_mean(se)
+                loss = self._V_mse
+                if l2_reg > 0:
+                    with tf.variable_scope('L2_Losses'):
+                        l2_loss = 0
+                        for var in self._V_vars:
+                            if 'bias' not in var.name and 'output' not in var.name:
+                                l2_loss += l2_reg * tf.nn.l2_loss(var)
+                        loss = loss + l2_loss
+                update_ops = self._get_update_ops('critic/V')
+                with tf.control_dependencies(update_ops):
+                    V_grads = tf.gradients(loss, self._V_vars)
+                    if clip_norm is not None:
+                        V_grads = [tf.clip_by_norm(
+                            grad, clip_norm=clip_norm) for grad in V_grads]
+                    self._train_V_op = self._optimizer_V.apply_gradients(
+                        list(zip(V_grads, self._V_vars)))
+                    # self.train_V_op = optimizer_q.minimize(self.V_mse, var_list=self.V_vars)
+
+        with tf.variable_scope('optimize_A'):
             # for training A:
-            self.A_vars = tf.get_collection(
-                tf.GraphKeys.TRAINABLE_VARIABLES, scope='{0}/original/critic/A'.format(name))
-            self.A_target_feed = tf.placeholder(dtype='float32', shape=[None])
-            se = tf.square(self.A - self.A_target_feed) / 2
-            self.A_mse = tf.reduce_mean(se)
-            with tf.name_scope('L2_Losses'):
-                l2_loss = 0
-                for var in self.A_vars:
-                    if 'bias' not in var.name:
-                        l2_loss += l2_reg * tf.nn.l2_loss(var)
-            loss = self.A_mse + l2_loss
-            update_ops = tf.get_collection(
-                tf.GraphKeys.UPDATE_OPS, scope='{0}/original/critic/A'.format(name))
+            self._A_vars = self._get_tf_trainable_variables('critic/A')
+            self._A_target_feed = tf.placeholder(dtype='float32', shape=[None])
+            se = tf.square(self._A - self._A_target_feed)
+            self._A_mse = tf.reduce_mean(se)
+            loss = self._A_mse
+            if l2_reg > 0:
+                with tf.variable_scope('L2_Losses'):
+                    l2_loss = 0
+                    for var in self._A_vars:
+                        if 'bias' not in var.name and 'output' not in var.name:
+                            l2_loss += l2_reg * tf.nn.l2_loss(var)
+                loss = loss + l2_loss
+            update_ops = self._get_update_ops('critic/A')
             with tf.control_dependencies(update_ops):
-                A_grads = tf.gradients(loss, self.A_vars)
+                A_grads = tf.gradients(loss, self._A_vars)
                 if clip_norm is not None:
-                    A_grads, norm = tf.clip_by_global_norm(
-                        A_grads, clip_norm=clip_norm)
-                self.train_A_op = optimizer_A.apply_gradients(
-                    list(zip(A_grads, self.A_vars)))
+                    A_grads = [tf.clip_by_norm(
+                        grad, clip_norm=clip_norm) for grad in A_grads]
+                self._train_A_op = self._optimizer_A.apply_gradients(
+                    list(zip(A_grads, self._A_vars)))
                 # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
 
-        with tf.name_scope('target_network_update_ops'):
+    def _setup_training(self, a_lr, a_l2_reg, a_clip_norm, lr, l2_reg, clip_norm):
+        with tf.variable_scope('training'):
+            with tf.variable_scope('optimizers'):
+                self._optimizer_A = tf.train.AdamOptimizer(
+                    learning_rate=lr, name='A_adam')
+                self._optimizer_V = tf.train.AdamOptimizer(
+                    learning_rate=lr, name='V_adam')
+                self._optimizer_a = tf.train.AdamOptimizer(
+                    learning_rate=a_lr, name='actor_adam')
+                self._optimizer_a_supervised = tf.train.AdamOptimizer(
+                    learning_rate=a_lr, name='actor_supervised_adam')
+            self._setup_actor_training(a_l2_reg, a_clip_norm)
+            self._setup_critic_training(l2_reg, clip_norm)
+
+    def _setup_saving_loading_ops(self):
+        with tf.variable_scope('saving_loading_ops'):
+            # for saving and loading
+            params = self._get_tf_variables()
+            self._load_placeholders = []
+            self._load_ops = []
+            for p in params:
+                p_placeholder = tf.placeholder(
+                    shape=p.shape.as_list(), dtype=tf.float32)
+                self._load_placeholders.append(p_placeholder)
+                self._load_ops.append(p.assign(p_placeholder))
+
+    def train_V(self, states, target_V):
+        return self.session.run([self._train_V_op, self._V_mse], feed_dict={
+            self._states_feed: states,
+            self._V_target_feed: target_V,
+            self._is_training_critic: True
+        })
+
+    def train_A(self, states, target_A, actions=None):
+        use_actions_feed = actions is not None
+        if actions is None:
+            actions = self.DUMMY_ACTION
+        return self.session.run([self._train_A_op, self._A_mse], feed_dict={
+            self._states_feed: states,
+            self._use_actions_feed: use_actions_feed,
+            self._actions_feed: actions,
+            self._A_target_feed: target_A,
+            self._is_training_a: False,
+            self._is_training_critic: True
+        })
+
+    def train_Q(self, states, target_Q, actions=None):
+        return self.train_A(states, target_Q, actions=actions)
+
+    def train_a(self, states):
+        return self.session.run([self._train_a_op, self._av_A], feed_dict={
+            self._states_feed: states,
+            self._use_actions_feed: False,
+            self._actions_feed: self.DUMMY_ACTION,
+            self._is_training_a: True,
+            self._is_training_critic: False
+        })
+
+    def train_a_supervised(self, states, desired_actions):
+        return self.session.run([self._train_a_supervised_op, self._a_mse], feed_dict={
+            self._states_feed: states,
+            self._a_desired: desired_actions,
+            self._use_actions_feed: False,
+            self._actions_feed: self.DUMMY_ACTION,
+            self._is_training_a: True,
+            self._is_training_critic: False
+        })
+
+    def save(self, save_path):
+        params = self.session.run(self._get_tf_variables())
+        from baselines.a2c.utils import make_path
+        make_path(os.path.dirname(save_path))
+        joblib.dump(params, save_path)
+
+    def load(self, load_path):
+        params = joblib.load(load_path)
+        feed_dict = {}
+        for p, p_placeholder in zip(params, self._load_placeholders):
+            feed_dict[p_placeholder] = p
+        self.session.run(self._load_ops, feed_dict=feed_dict)
+
+
+class DDPG_Model_Target(DDPG_Model_Base):
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_shape, ac_shape, softmax_actor, nn_size, ob_dtype, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, tau, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
+        super().__init__(session=session, name=name, ob_shape=ob_shape, ac_shape=ac_shape, softmax_actor=softmax_actor, nn_size=nn_size, ob_dtype=ob_dtype, init_scale=init_scale, advantage_learning=advantage_learning,
+                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_action_feed=log_transform_action_feed, log_transform_max_x=log_transform_max_x, log_transform_t=log_transform_t)
+        self.main_network = main_network
+        self.tau = tau
+        with tf.variable_scope(name):
+            self._setup_states_feed()
+            self._setup_actor()
+            self._setup_critic()
+            self._setup_update_from_main_network()
+
+    def _setup_update_from_main_network(self):
+        with tf.variable_scope('target_network_update_ops'):
             # for updating target network:
-            from_vars = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, '{0}/original'.format(name))
-            to_vars = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, '{0}/target'.format(name))
-            self.update_target_network_op, self.soft_update_target_network_op = [], []
+            from_vars = self.main_network._get_tf_variables()
+            from_vars_trainable = self.main_network._get_tf_trainable_variables()
+            to_vars = self._get_tf_variables()
+            to_vars_trainable = self.main_network._get_tf_trainable_variables()
+            assert len(from_vars) == len(to_vars) and len(from_vars) > 0, print(
+                '{0},{1}'.format(len(from_vars), len(to_vars)))
+            assert len(from_vars_trainable) == len(to_vars_trainable) and len(from_vars_trainable) > 0, print(
+                '{0},{1}'.format(len(from_vars_trainable), len(to_vars_trainable)))
+            self._update_network_op, self._soft_update_network_op = [], []
             for from_var, to_var in zip(from_vars, to_vars):
                 hard_update_op = to_var.assign(from_var)
                 soft_update_op = to_var.assign(
-                    tau * from_var + (1 - tau) * to_var)
-                self.update_target_network_op.append(hard_update_op)
-                if 'batch_norm' in from_var.name:
+                    self.tau * from_var + (1 - self.tau) * to_var)
+                self._update_network_op.append(hard_update_op)
+                if from_var not in from_vars_trainable:
                     soft_update_op = hard_update_op
-                self.soft_update_target_network_op.append(soft_update_op)
+                self._soft_update_network_op.append(soft_update_op)
 
-        with tf.name_scope('noisy_actor_update_ops'):
-            from_vars = tf.get_collection(
-                tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/original/actor'.format(name))
-            self.params_actor = from_vars
-            to_vars = tf.get_collection(
-                tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/noisy_actor'.format(name))
-            self.noise_vars = []
-            self.update_noisy_actor_op = []
+    def soft_update_from_main_network(self):
+        self.session.run(self._soft_update_network_op)
+
+    def update_from_main_network(self):
+        self.session.run(self._update_network_op)
+
+
+class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_shape, ac_shape, softmax_actor, nn_size, ob_dtype, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
+        super().__init__(session=session, name=name, ob_shape=ob_shape, ac_shape=ac_shape, softmax_actor=softmax_actor, nn_size=nn_size, ob_dtype=ob_dtype, init_scale=init_scale, advantage_learning=advantage_learning,
+                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_action_feed=log_transform_action_feed, log_transform_max_x=log_transform_max_x, log_transform_t=log_transform_t)
+        self.main_network = main_network
+        self.target_divergence = target_divergence
+        self._main_network_actor_params = self.main_network._get_tf_variables(
+            'actor')
+        self._main_network_actor_params_perturbable = self.main_network._get_tf_perturbable_variables(
+            'actor')
+        with tf.variable_scope(name):
+            self._setup_states_feed()
+            self._setup_actor()
+            # dont setup critic for this one
+            self._setup_update_from_main_network()
+            self._setup_divergence_calculation()
+            self._setup_param_sensitivity_calculation()
+        self.adaptive_sigma = init_scale
+
+    def _setup_update_from_main_network(self):
+        with tf.variable_scope('noisy_actor_update_ops'):
+            from_vars = self._main_network_actor_params
+            to_vars = self._get_tf_variables()
+            to_vars_perturbable = self._get_tf_perturbable_variables()
+            assert len(from_vars) == len(to_vars) and len(from_vars) > 0, print(
+                '{0},{1}'.format(len(from_vars), len(to_vars)))
+            assert len(self._main_network_actor_params_perturbable) == len(to_vars_perturbable) and len(to_vars_perturbable) > 0, print(
+                '{0},{1}'.format(len(self._main_network_actor_params_perturbable), len(to_vars_perturbable)))
+            self._noise_vars = []
+            self._noisy_update_network_op = []
             for from_var, to_var in zip(from_vars, to_vars):
-                noise_var = tf.placeholder(
-                    shape=from_var.shape.as_list(), dtype=tf.float32)
-                self.noise_vars.append(noise_var)
-                self.update_noisy_actor_op.append(
-                    to_var.assign(from_var + noise_var))
+                if from_var in self._main_network_actor_params_perturbable:
+                    noise_var = tf.placeholder(
+                        shape=from_var.shape.as_list(), dtype=tf.float32)
+                    self._noise_vars.append(noise_var)
+                    self._noisy_update_network_op.append(
+                        to_var.assign(from_var + noise_var))
+                else:
+                    self._noisy_update_network_op.append(
+                        to_var.assign(from_var))
 
-        with tf.name_scope('actor_params_sensitivities'):
-            sensitivities_squared = [0] * len(self.params_actor)
-            for k in range(ac_shape[0]):
-                gradients_k = tf.gradients(self.a[:, k], self.params_actor)
-                for var_index in range(len(self.params_actor)):
+    def _setup_param_sensitivity_calculation(self):
+        with tf.variable_scope('actor_params_sensitivities'):
+            sensitivities_squared = [
+                0] * len(self._main_network_actor_params_perturbable)
+            for k in range(self.ac_shape[0]):
+                gradients_k = tf.gradients(
+                    self.main_network._a[:, k], self._main_network_actor_params_perturbable)
+                for var_index in range(len(self._main_network_actor_params_perturbable)):
                     sensitivities_squared[var_index] = sensitivities_squared[var_index] + tf.square(
                         gradients_k[var_index])
-            self.actor_params_sensitivities = [
+            self._main_network_actor_params_sensitivities = [
                 tf.sqrt(s) for s in sensitivities_squared]
 
-        with tf.name_scope('saving_loading_ops'):
-            # for saving and loading
-            self.params = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, '{0}/original'.format(name))
-            self.load_placeholders = []
-            self.load_ops = []
-            for p in self.params:
-                p_placeholder = tf.placeholder(
-                    shape=p.shape.as_list(), dtype=tf.float32)
-                self.load_placeholders.append(p_placeholder)
-                self.load_ops.append(p.assign(p_placeholder))
+    def _setup_divergence_calculation(self):
+        with tf.variable_scope('divergence'):
+            self._divergence = tf.sqrt(tf.reduce_mean(
+                tf.square(self._a - self.main_network._a)))
 
-        # for visualizing computation graph in tensorboard
-        self.writer = tf.summary.FileWriter(
-            logger.get_dir(), self.session.graph)
-        # other summaries:
-        # while training V and A:
-        self.V_mse_summary = tf.summary.scalar('mb_V_mse', self.V_mse)
-        self.V_summary = tf.summary.histogram('mb_V', self.V_target_feed)
-        self.A_mse_summary = tf.summary.scalar('mb_A_mse', self.A_mse)
-        self.A_summary = tf.summary.histogram('mb_A', self.A_target_feed)
-        # while training a:
-        self.av_max_A_summary = tf.summary.scalar('mb_av_max_A', self.av_A)
-        # while playing:
-        self.frame_Q_summary = tf.summary.scalar('frame_Q', self.Q[0])
-        self.frame_A_summary = tf.summary.scalar('frame_A', self.A[0])
-        # score keeping:
-        self.R_placeholder = tf.placeholder(dtype=tf.float32)
-        self.R_summary = tf.summary.scalar(
-            'Reward_Per_Episode', self.R_placeholder)
-        self.R_exploit_placeholder = tf.placeholder(dtype=tf.float32)
-        self.R_exploit_summary = tf.summary.scalar(
-            'Reward_Per_Episode_Exploit', self.R_exploit_placeholder)
-        self.blip_R_exploit_placeholder = tf.placeholder(dtype=tf.float32)
-        self.blip_R_exploit_summary = tf.summary.scalar(
-            'Blip_Reward_Per_Episode_Exploit', self.blip_R_exploit_placeholder)
-        self.score_summary = tf.summary.merge(
-            [self.R_summary, self.R_exploit_summary, self.blip_R_exploit_summary])
-        # param noise variables:
-        self.divergence_placeholder = tf.placeholder(dtype=tf.float32)
-        self.divergence_summary = tf.summary.scalar(
-            'Param_Noise_Actor_Divergence', self.divergence_placeholder)
-        self.adaptive_sigma_placeholder = tf.placeholder(dtype=tf.float32)
-        self.adaptive_sigma_summary = tf.summary.scalar(
-            'Param_Noise_Adaptive_Sigma', self.adaptive_sigma_placeholder)
-
-    def get_a_V_A_Q(self, states):
-        ops, feed = self.get_a_V_A_Q_op_and_feed(states)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_a_V_A_Q_op_and_feed(self, states):
-        return [self.a, self.V, self.A, self.Q, self.frame_A_summary, self.frame_Q_summary],\
-            {self.states_feed: states, self.use_actions_feed: False,
-                self.actions_feed: [np.zeros(self.ac_shape)],
-                self.is_training_a: False, self.is_training_critic: False}
-
-    def get_noisy_a(self, states):
-        return self.session.run(self.a_noisy_actor, feed_dict={self.states_feed_noisy_actor: states})
-
-    def get_divergence_noisy_actor(self, states):
-        feed_dict = {
-            self.states_feed_noisy_actor: states,
-            self.states_feed: states,
-            self.is_training_a: False,
-            self.use_actions_feed: False,
-            self.actions_feed: [np.zeros(self.ac_shape)]
-        }
-        return self.session.run(self.divergence_noisy_actor, feed_dict=feed_dict)
-
-    def get_V_A_Q(self, states, actions):
-        ops, feed = self.get_V_A_Q_op_and_feed(states, actions)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_V_A_Q_op_and_feed(self, states, actions):
-        return [self.V, self.A, self.Q, self.frame_A_summary, self.frame_Q_summary],\
-            {self.states_feed: states, self.use_actions_feed: True,
-                self.actions_feed: actions,
-                self.is_training_a: False, self.is_training_critic: False}
-
-    def train_V(self, states, target_V):
-        ops, feed = self.get_train_V_op_and_feed(
-            states, target_V)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_train_V_op_and_feed(self, states, target_V):
-        return [self.train_V_op, self.V_mse, self.V_mse_summary, self.V_summary],\
-            {self.states_feed: states, self.V_target_feed: target_V,
-                self.is_training_critic: True}
-
-    def train_A(self, states, target_A, actions=None):
-        ops, feed = self.get_train_A_op_and_feed(
-            states, target_A, actions=actions)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_train_A_op_and_feed(self, states, target_A, actions=None):
-        use_actions_feed = actions is not None
-        if actions is None:
-            actions = [np.zeros(self.ac_shape)]
-        return [self.train_A_op, self.A_mse, self.A_mse_summary, self.A_summary],\
-            {self.states_feed: states, self.use_actions_feed: use_actions_feed,
-                self.actions_feed: actions, self.A_target_feed: target_A,
-                self.is_training_a: False, self.is_training_critic: True}
-
-    def train_a(self, states):
-        ops, feed = self.get_train_a_op_and_feed(states)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_train_a_op_and_feed(self, states):
-        return [self.train_a_op, self.av_A, self.av_max_A_summary],\
-            {self.states_feed: states, self.use_actions_feed: False,
-                self.actions_feed: [np.zeros(self.ac_shape)],
-                self.is_training_a: True, self.is_training_critic: False}
-
-    def get_target_a_V_A_Q(self, states):
-        ops, feed = self.get_target_a_V_A_Q_op_and_feed(states)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_target_a_V_A_Q_op_and_feed(self, states):
-        return [self.a_target, self.V_target, self.A_target, self.Q_target], \
-            {self.states_feed_target: states,
-             self.use_actions_feed_target: False,
-             self.actions_feed_target: [np.zeros(self.ac_shape)]}
-
-    def get_target_V_A_Q(self, states, actions):
-        ops, feed = self.get_target_V_A_Q_op_and_feed(states, actions)
-        return self.session.run(ops, feed_dict=feed)
-
-    def get_target_V_A_Q_op_and_feed(self, states, actions):
-        return [self.V_target, self.A_target, self.Q_target], {self.states_feed_target: states, self.use_actions_feed_target: True, self.actions_feed_target: actions}
-
-    def update_target_networks(self):
-        ops, feed = self.get_update_target_network_op_and_feed()
-        self.session.run(ops, feed_dict=feed)
-
-    def soft_update_target_networks(self):
-        ops, feed = self.get_soft_update_target_network_op_and_feed()
-        self.session.run(ops, feed_dict=feed)
-
-    def get_update_target_network_op_and_feed(self):
-        return [self.update_target_network_op], {}
-
-    def get_soft_update_target_network_op_and_feed(self):
-        return [self.soft_update_target_network_op], {}
-
-    def update_noisy_actor(self, param_noise):
+    def noisy_update_from_main_network(self, param_noise):
         feed_dict = {}
-        for noise_var_placeholder, noise_var in zip(self.noise_vars, param_noise):
+        for noise_var_placeholder, noise_var in zip(self._noise_vars, param_noise):
             feed_dict[noise_var_placeholder] = noise_var
-        return self.session.run(self.update_noisy_actor_op, feed_dict=feed_dict)
+        return self.session.run(self._noisy_update_network_op, feed_dict=feed_dict)
 
-    def generate_normal_param_noise(self, sigma):
-        params = self.session.run(self.params_actor)
+    def get_divergence(self, states):
+        return self.session.run(self._divergence, feed_dict={
+            self._states_feed: states,
+            self._use_actions_feed: False,
+            self._actions_feed: self.DUMMY_ACTION,
+            self._is_training_a: False,
+            self.main_network._states_feed: states,
+            self.main_network._use_actions_feed: False,
+            self.main_network._actions_feed: self.DUMMY_ACTION,
+            self.main_network._is_training_a: False
+        })
+
+    def generate_normal_param_noise(self, sigma=None):
+        if sigma is None:
+            sigma = self.adaptive_sigma
+        params = self.session.run(self._main_network_actor_params_perturbable)
         noise = []
         for p in params:
             n = sigma * np.random.standard_normal(size=np.shape(p))
             noise.append(n)
         return noise
 
-    def generate_safe_noise(self, sigma, states):
+    def generate_safe_noise(self, states, sigma=None):
+        noise = self.generate_normal_param_noise(sigma)
         feed_dict = {
-            self.states_feed: states,
-            self.is_training_a: False,
-            self.use_actions_feed: False,
-            self.actions_feed: [np.zeros(self.ac_shape)]
+            self.main_network._states_feed: states,
+            self.main_network._is_training_a: False,
+            self.main_network._use_actions_feed: False,
+            self.main_network._actions_feed: self.DUMMY_ACTION
         }
-        params, sensitivities = self.session.run(
-            [self.params_actor, self.actor_params_sensitivities], feed_dict=feed_dict)
-        noise = []
-        for p, s in zip(params, sensitivities):
-            s = s / len(states)  # to make s independent of mb size
-            n = sigma * np.random.standard_normal(size=np.shape(p))
-            n = n / (s + 1e-3)
-            noise.append(n)
-        return noise
+        sensitivities = self.session.run(
+            self._main_network_actor_params_sensitivities, feed_dict=feed_dict)
+        noise_safe = []
+        for n, s in zip(noise, sensitivities):
+            s = s / np.sqrt(len(states))  # to make s independent of mb size
+            n_safe = n / (s + 1e-3)
+            noise_safe.append(n_safe)
+        return noise_safe
 
-    def save(self, save_path):
-        params = self.session.run(self.params)
-        from baselines.a2c.utils import make_path
-        make_path(os.path.dirname(save_path))
-        joblib.dump(params, save_path)
-        self.writer.flush()
+    def adapt_sigma(self, divergence):
+        multiplier = 1 + abs(divergence - self.target_divergence)
+        if divergence < self.target_divergence:
+            self.adaptive_sigma = self.adaptive_sigma * multiplier
+        else:
+            self.adaptive_sigma = self.adaptive_sigma / multiplier
 
-    def load(self, load_path):
-        params = joblib.load(load_path)
-        feed_dict = {}
-        for p, p_placeholder in zip(params, self.load_placeholders):
-            feed_dict[p_placeholder] = p
-        self.session.run(self.load_ops, feed_dict=feed_dict)
+
+class Summaries:
+    def __init__(self, session: tf.Session):
+        self.session = session
+        self.writer = tf.summary.FileWriter(
+            logger.get_dir(), self.session.graph)
+
+    def setup_scalar_summaries(self, keys):
+        for k in keys:
+            # ensure no white spaces in k:
+            if ' ' in k:
+                raise ValueError("Keys cannot contain whitespaces")
+            placeholder_symbol = k
+            setattr(self, placeholder_symbol, tf.placeholder(
+                dtype=tf.float32, name=placeholder_symbol + '_placeholder'))
+            placeholder = getattr(self, placeholder_symbol)
+            summay_symbol = k + '_summary'
+            setattr(self, summay_symbol, tf.summary.scalar(k, placeholder))
+
+    def setup_histogram_summaries(self, keys):
+        for k in keys:
+            # ensure no white spaces in k:
+            if ' ' in k:
+                raise ValueError("Keys cannot contain whitespaces")
+            placeholder_symbol = k
+            setattr(self, placeholder_symbol, tf.placeholder(
+                dtype=tf.float32, shape=[None], name=placeholder_symbol + '_placeholder'))
+            placeholder = getattr(self, placeholder_symbol)
+            summay_symbol = k + '_summary'
+            setattr(self, summay_symbol, tf.summary.histogram(k, placeholder))
+
+    def write_summaries(self, kvs, global_step):
+        for key in kvs:
+            placeholder_symbol = key
+            summary_symbol = key + "_summary"
+            if hasattr(self, placeholder_symbol) and hasattr(self, summary_symbol):
+                summary = self.session.run(getattr(self, summary_symbol), feed_dict={
+                    getattr(self, placeholder_symbol): kvs[key]
+                })
+                self.writer.add_summary(summary, global_step=global_step)
+            else:
+                logger.log("Invalid summary key {0}".format(
+                    key), level=logger.WARN)
+
+
+class DDPG_Model:
+    def __init__(self, session: tf.Session, use_param_noise, sys_args_dict):
+        self.main = DDPG_Model_Main(session, "model_main", **sys_args_dict)
+        self.target = DDPG_Model_Target(
+            session, "model_target", self.main, **sys_args_dict)
+        if use_param_noise:
+            print("creating noisy actor")
+            self.noisy = DDPG_Model_With_Param_Noise(
+                session, "model_param_noise", self.main, **sys_args_dict)
+        self.summaries = Summaries(session)
