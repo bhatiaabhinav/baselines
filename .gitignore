@@ -39,3 +39,11 @@ src
 
 # mypy stuff
 .mypy_cache/
+baselines/ers/arith_test.py
+baselines/ers/factored_ddpg_solver.py
+scripts/arith_test.bat
+scripts/arith_test.sh
+scripts/ers_analyse.bat
+scripts/ers_analyse.sh
+scripts/car_racing.bat
+scripts/car_racing_train.sh
