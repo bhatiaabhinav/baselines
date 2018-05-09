@@ -49,9 +49,21 @@ def tf_log_transform(inputs, max_x, t, scope, is_input_normalized=True):
 
 def tf_safe_softmax(inputs, scope):
     with tf.variable_scope(scope):
-        exp = tf.exp(inputs - tf.reduce_max(inputs,
-                                            axis=-1, keep_dims=True, name='max'))
-        return exp / tf.reduce_sum(exp, axis=-1, keep_dims=True, name='sum')
+        exp = tf.exp(tf.minimum(inputs, 0))
+        sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
+        return exp / sigma
+
+
+def tf_safe_softmax_with_individual_constraints(inputs, max_output, scope):
+    with tf.variable_scope(scope):
+        dimensions = reduce(mul, inputs.shape.as_list()[1:], 1)
+        if max_output < 1 / dimensions or max_output > 1:
+            raise ValueError(
+                "max_output needs to be in range [1/dimensions, 1]")
+        exp = tf.exp(tf.minimum(inputs, 0))
+        sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
+        epsilon = dimensions * (1 - max_output) / (dimensions * max_output - 1)
+        return (exp + epsilon / dimensions) / (sigma + epsilon)
 
 
 def tf_conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):

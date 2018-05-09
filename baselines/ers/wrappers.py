@@ -3,6 +3,7 @@ from collections import deque
 import gym
 import numpy as np
 
+from gym import error
 from baselines import logger
 
 
@@ -47,19 +48,19 @@ class LinearFrameStackWrapper(gym.Wrapper):
         self.observation_space = gym.spaces.Box(
             low=np.array(list(space.low) * k), high=np.array(list(space.high) * k))
 
-    def _reset(self):
+    def reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""
         ob = self.env.reset()
         for _ in range(self.k):
             self.frames.append(ob)
         return self._observation()
 
-    def _step(self, action):
+    def step(self, action):
         ob, reward, done, info = self.env.step(action)
         self.frames.append(ob)
         return self._observation(), reward, done, info
 
-    def _observation(self):
+    def observation(self):
         assert len(self.frames) == self.k
         obs = np.concatenate(self.frames, axis=0)
         assert list(np.shape(obs)) == list(self.observation_space.shape)
@@ -102,7 +103,7 @@ class ERSEnvWrapper(gym.Wrapper):
         # assert sum(alloc) == 1, "sum is {0}".format(sum(alloc))
         return alloc
 
-    def _reset(self):
+    def reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""
         self.obs = self.env.reset()
         for _ in range(self.k):
@@ -154,7 +155,7 @@ class ERSEnvImWrapper(gym.Wrapper):
         # assert sum(alloc) == 1, "sum is {0}".format(sum(alloc))
         return alloc
 
-    def _reset(self):
+    def reset(self):
         """Clear buffer and re-fill by duplicating the first observation."""
         self.obs = self.env.reset()
         for _ in range(self.k):
@@ -178,3 +179,153 @@ class ERSEnvImWrapper(gym.Wrapper):
                 np.round(self.obs[:, :, 0], 2)), level=logger.DEBUG)
         assert list(obs.shape) == [21, 21, 5]
         return obs
+
+
+class ERStoMMDPWrapper(gym.Wrapper):
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.metadata['nzones'] = self.metadata['nbases']
+        self.metadata['nresources'] = self.metadata['nambs']
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        return self.env.step(action)
+
+
+class BSStoMMDPWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.metadata['nzones'] = self.metadata['nzones']
+        self.metadata['nresources'] = self.metadata['nbikes']
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        return self.env.step(action)
+
+
+class MMDPObsStackWrapper(gym.Wrapper):
+    k = 3
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.last_k_demands = deque([], maxlen=self.k)
+        self.nzones = self.metadata['nzones']
+        low = list(self.env.observation_space.low)
+        low = low[0:self.nzones] * self.k + low[self.nzones:]
+        high = list(self.env.observation_space.high)
+        high = high[0:self.nzones] * self.k + high[self.nzones:]
+        self.observation_space = gym.spaces.Box(
+            low=np.array(low), high=np.array(high), dtype=self.env.observation_space.dtype)
+
+    def _observation(self):
+        assert len(self.last_k_demands) == self.k
+        obs = np.concatenate((np.concatenate(
+            self.last_k_demands, axis=0), self.obs[self.nzones:]), axis=0)
+        return obs
+
+    def reset(self):
+        """Clear buffer and re-fill by duplicating the first observation."""
+        self.obs = self.env.reset()
+        for _ in range(self.k):
+            self.last_k_demands.append(self.obs[0:self.nzones])
+        return self._observation()
+
+    def step(self, action):
+        self.obs, r, d, info = self.env.step(action)
+        self.last_k_demands.append(self.obs[0:self.nzones])
+        return self._observation(), r, d, info
+
+
+class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.nzones = self.metadata['nzones']
+        self.nresources = self.metadata['nresources']
+        self.action_space = gym.spaces.Box(
+            0, 1, shape=[self.nzones], dtype=np.float32)
+
+    def reset(self):
+        self.obs = self.env.reset()
+        return self.obs
+
+    def step(self, action):
+        # action = [1 / self.nzones] * self.nzones
+        if not isinstance(action, np.ndarray):
+            action = np.array(action)
+        if abs(sum(action) - 1) > 1e-6:
+            raise error.InvalidAction(
+                "Invalid action. The action must sum to 1. Provided action was {0}".format(action))
+        if np.any(action < -0.0):
+            raise ValueError(
+                "Each dimension of action must be >=0. Provided action was {0}".format(action))
+        allocation_fraction = action * self.nresources
+        allocation = np.round(allocation_fraction)
+        # print(allocation)
+        allocated = np.sum(allocation)
+        deficit_per_zone = allocation_fraction - allocation
+        deficit = self.nresources - allocated
+        # print('deficit: {0}'.format(deficit))
+        while deficit != 0:
+            increase = int(deficit > 0) - int(deficit < 0)
+            # print('increase: {0}'.format(increase))
+            target_zone = np.argmax(increase * deficit_per_zone)
+            # print('target zone: {0}'.format(target_zone))
+            allocation[target_zone] += increase
+            # print('alloction: {0}'.format(allocation))
+            allocated += increase
+            deficit_per_zone[target_zone] -= increase
+            deficit -= increase
+            # print('deficit: {0}'.format(deficit))
+        # allocation = self.obs[0:self.nzones]
+        logger.log("action: {0}".format(allocation), level=logger.DEBUG)
+        self.obs, r, d, info = self.env.step(allocation)
+        return self.obs, r, d, info
+
+
+class MMDPObsNormalizeWrapper(gym.Wrapper):
+    """Must be used before MMDPObsStackWrapper"""
+    demand_log_transform_t = 0.005
+    alloc_log_transform_t = 5
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.nzones = self.env.metadata['nzones']
+        self.max_demand = self.env.observation_space.high[0:self.nzones]
+        self.max_alloc = self.env.observation_space.high[self.nzones:2 * self.nzones]
+        self.max_time = self.env.observation_space.high[-1]
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1, shape=self.env.observation_space.shape, dtype=np.float32)
+        self.metadata['alloc_log_transform_t'] = self.alloc_log_transform_t
+        self.metadata['demand_log_transform_t'] = self.demand_log_transform_t
+        self.metadata['max_demand'] = self.max_demand
+        self.metadata['max_alloc'] = self.max_alloc
+
+    def _log_transform(self, x, max_x, t):
+        return np.log(1 + x / t) / np.log(1 + max_x / t)
+
+    def _transform_obs(self, obs):
+        obs = np.copy(obs)
+        logger.log('demand: {0}'.format(
+            np.round(obs[0:self.nzones], 2)), level=logger.DEBUG)
+        obs[0:self.nzones] = self._log_transform(
+            obs[0:self.nzones], self.max_demand, self.demand_log_transform_t)
+        logger.log('cur_alloc: {0}'.format(
+            np.round(obs[self.nzones: 2 * self.nzones], 2)), level=logger.DEBUG)
+        obs[self.nzones: 2 * self.nzones] = self._log_transform(
+            obs[self.nzones: 2 * self.nzones], self.max_alloc, self.alloc_log_transform_t)
+        logger.log('cur_time: {0}'.format(
+            np.round(obs[-1], 2)), level=logger.DEBUG)
+        obs[-1] = obs[-1] / self.max_time
+        return obs
+
+    def reset(self):
+        return self._transform_obs(self.env.reset())
+
+    def step(self, action):
+        obs, r, d, info = self.env.step(action)
+        return self._transform_obs(obs), r, d, info
