@@ -23,7 +23,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--logger_level=DEBUG \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=ddpg_ers
+	--run_no_prefix=ddpg_bss
+# --saved_model=$OPENAI_LOGDIR/BSSEnv-v0/ddpg_bss_001/model \
+# --test_mode=True
 # --render=True \
-# --test_mode=True \
-# --saved_model=$OPENAI_LOGDIR/$ENV/ddpg_new_000/model

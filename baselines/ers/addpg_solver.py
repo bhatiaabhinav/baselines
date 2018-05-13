@@ -206,17 +206,24 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     for W in wrappers:
         env = W(env)  # type: gym.Wrapper
     if actor is None:
-        sys_args_dict["ob_shape"] = env.observation_space.shape
-        sys_args_dict["ac_shape"] = env.action_space.shape
-        sys_args_dict["log_transform_max_x"] = env.metadata.get(
-            'max_alloc', None)
-        sys_args_dict["log_transform_t"] = env.metadata.get(
-            'alloc_log_transform_t', None)
+        sys_args_dict["ob_space"] = env.observation_space
+        sys_args_dict["ac_space"] = env.action_space
+        # sys_args_dict["log_transform_max_x"] = env.metadata.get(
+        #     'max_alloc', None)
+        # sys_args_dict["log_transform_t"] = env.metadata.get(
+        #     'alloc_log_transform_t', None)
+        if exploration_sigma is None:
+            exploration_sigma = 1 / env.metadata.get('nresources', 5)
+            logger.log('exploration_sigma has been set as {0}'.format(
+                exploration_sigma))
+        sys_args_dict['target_divergence'] = exploration_sigma
         model = DDPG_Model(sess, use_param_noise, sys_args_dict)
         sess.run(tf.global_variables_initializer())
         model.summaries.setup_scalar_summaries(['V_mse', 'A_mse', 'Q_mse', 'av_max_A', 'av_max_Q',
                                                 'frame_Q', 'frame_A', 'R', 'ep_length', 'R_exploit', 'blip_R_exploit', 'divergence', 'adaptive_sigma'])
         model.summaries.setup_histogram_summaries(['V', 'A', 'Q'])
+    else:
+        model = actor
     if load_path:
         try:
             model.main.load(load_path)
@@ -225,6 +232,8 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
             logger.log('Failed to load model. Reason = {0}'.format(
                 ex), level=logger.ERROR)
     model.target.update_from_main_network()
+    noise = None
+    experience_buffer = None
     if learning:
         experience_buffer = ExperienceBuffer(
             length=replay_buffer_length, size_in_bytes=replay_memory_size_in_bytes)
@@ -245,11 +254,12 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
                 train(model, experience_buffer, f, mb_size, gamma, double_Q_learning=double_Q_learning,
                       advantage_learning=advantage_learning, hard_update_target=hard_update_target, train_every=train_every, tau=tau, log=should_log)
                 if use_ga_optimization and f % (50 * train_every) == 0:
-                    mutation_fn = mutated_ers if 'ERS' in env_id else mutated_gaussian
+                    mutation_fn = mutated_ers if (
+                        'ERS' in env_id or 'BSS' in env_id) else mutated_gaussian
                     ga_optimize_actor(model, experience_buffer.random_states(
                         mb_size), mutation_fn, exploration_sigma, train_steps=100)
             a = get_action(model=model, obs=obs, env=env, action_noise=noise,
-                           use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action='ERS' in env_id, log=should_log, f=f)
+                           use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action=('ERS' in env_id or 'BSS' in env_id), log=should_log, f=f)
             obs_, r, d, _ = env.step(a)
             r = r * reward_scaling
             if render:
@@ -338,7 +348,6 @@ if __name__ == '__main__':
     else:
         kwargs['replay_memory_size_in_bytes'] = None
     kwargs['Noise_type'] = OrnsteinUhlenbeckActionNoise
-    kwargs['target_divergence'] = args.exploration_sigma
     kwargs['learning_env_seed'] = args.seed
     kwargs['learning_episodes'] = args.training_episodes
     kwargs['test_env_seed'] = args.test_seed
@@ -357,6 +366,7 @@ if __name__ == '__main__':
     elif 'BSSEnv' in kwargs['env_id']:
         kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
+        kwargs['softmax_actor'] = True
     elif 'ERSEnv-im' in kwargs['env_id']:
         kwargs['wrappers'] = [ERSEnvImWrapper]
         kwargs['softmax_actor'] = True

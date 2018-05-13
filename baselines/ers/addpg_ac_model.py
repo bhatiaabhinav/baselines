@@ -3,30 +3,33 @@ import os
 import joblib
 import numpy as np
 import tensorflow as tf
+from gym.spaces import Box
 
 from baselines import logger
-from baselines.ers.utils import tf_deep_net, tf_log_transform, tf_safe_softmax
+from baselines.ers.utils import (tf_deep_net, tf_log_transform_adaptive,
+                                 tf_safe_softmax_with_non_uniform_individual_constraints)
 
 
 class DDPG_Model_Base:
-    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor, nn_size,
-                 ob_dtype, init_scale, advantage_learning, use_layer_norm,
-                 use_batch_norm, use_norm_actor, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
+    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
         assert len(
-            ac_shape) == 1, "Right now only flat action spaces are supported"
+            ac_space.shape) == 1, "Right now only flat action spaces are supported"
         self.session = session
         self.name = name
-        self.ac_shape = ac_shape
-        self.ob_shape = ob_shape
-        self.ob_dtype = ob_dtype
+        self.ac_shape = ac_space.shape
+        self.ac_high = ac_space.high
+        self.ob_shape = ob_space.shape
+        self.ob_dtype = ob_space.dtype
+        self.ob_high = ob_space.high
         self.nn_size = nn_size
         self.init_scale = init_scale
         self.use_batch_norm = use_batch_norm
         self.use_layer_norm = use_layer_norm
         self.use_norm_actor = use_norm_actor
-        self.log_transform_action_feed = log_transform_action_feed
-        self.log_transform_max_x = log_transform_max_x
-        self.log_transform_t = log_transform_t
+        self.log_transform_inputs = log_transform_inputs
+        # self.log_transform_action_feed = log_transform_action_feed
+        # self.log_transform_max_x = log_transform_max_x
+        # self.log_transform_t = log_transform_t
         self.softmax_actor = softmax_actor
         self.advantage_learning = advantage_learning
         self.DUMMY_ACTION = [np.zeros(self.ac_shape)]
@@ -39,10 +42,15 @@ class DDPG_Model_Base:
         with tf.variable_scope('model/actor'):
             self._is_training_a = tf.placeholder(
                 dtype=tf.bool, name='is_training_a')
-            a = tf_deep_net(self._states_feed, self.ob_shape, self.ob_dtype, 'a_network', self.nn_size, use_ln=self.use_layer_norm and self.use_norm_actor,
+            states = self._tf_normalize_states(
+                self._states_feed, 'normalized_states', self._is_training_a)
+            a = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'a_network', self.nn_size, use_ln=self.use_layer_norm and self.use_norm_actor,
                             use_bn=self.use_batch_norm and self.use_norm_actor, training=self._is_training_a, output_shape=self.ac_shape)
-            a = tf_safe_softmax(
-                a, 'softmax') if self.softmax_actor else tf.nn.tanh(a, 'tanh')
+            if self.softmax_actor:
+                a = tf_safe_softmax_with_non_uniform_individual_constraints(
+                    a, self.ac_high, 'constrained_softmax')
+            else:
+                a = tf.nn.tanh(a, 'tanh')
             self._use_actions_feed = tf.placeholder(
                 dtype=tf.bool, name='use_actions_feed')
             self._actions_feed = tf.placeholder(
@@ -51,24 +59,53 @@ class DDPG_Model_Base:
                 (self._use_actions_feed, lambda: self._actions_feed)
             ], default=lambda: a)
 
+    def _tf_normalize_states(self, states, scope, is_training):
+        with tf.variable_scope(scope):
+            if self.log_transform_inputs:
+                zones = self.ac_shape[0]
+                states_feed_demand = states[:, :-zones - 1]
+                states_feed_alloc = states[:, -zones - 1:-1]
+                states_feed_time = states[:, -1:]
+                states_feed_demand = tf.layers.batch_normalization(
+                    states_feed_demand, training=is_training, name='batch_norm_demand')
+                # states_feed_demand = tf_log_transform_adaptive(
+                #     states_feed_demand, 'log_transform_demand', max_inputs=self.ob_high[:-zones - 1], uniform_beta=True)
+                # states_feed_alloc = tf.layers.batch_normalization(
+                #     states_feed_alloc, training=is_training, name='batch_norm_alloc')
+                states_feed_alloc = tf_log_transform_adaptive(
+                    states_feed_alloc, 'log_transform_alloc', max_inputs=self.ob_high[-zones - 1:-1], uniform_beta=True)
+                states = tf.concat(
+                    [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
+                # states = tf.layers.batch_normalization(
+                #     states, training=is_training, name='batch_norm')
+            else:
+                states = tf.layers.batch_normalization(
+                    states, training=is_training, name='batch_norm')
+            return states
+
     def _setup_critic(self):
         with tf.variable_scope('model/critic'):
+            self._is_training_critic = tf.placeholder(
+                dtype=tf.bool, name='is_training_critic')
             with tf.variable_scope('A'):
-                self._is_training_critic = tf.placeholder(
-                    dtype=tf.bool, name='is_training_critic')
-                s_after_one_hidden = tf_deep_net(self._states_feed, self.ob_shape, self.ob_dtype, 'one_hidden',
+                states = self._tf_normalize_states(
+                    self._states_feed, 'normalized_states', self._is_training_critic)
+                s_after_one_hidden = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'one_hidden',
                                                  self.nn_size[0:1], use_ln=self.use_layer_norm, use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=None)
-                if self.log_transform_action_feed:
-                    a = tf_log_transform(
-                        self._a, self.log_transform_max_x, self.log_transform_t, scope='log_transform')
+                if self.log_transform_inputs:
+                    a = tf_log_transform_adaptive(
+                        self._a, scope='log_transform', uniform_beta=True, max_inputs=self.ac_high)
                 else:
-                    a = self._a
+                    a = tf.layers.batch_normalization(
+                        self._a, training=self._is_training_critic, name='batch_norm')
                 s_a_concat = tf.concat(
                     [s_after_one_hidden, a], axis=-1, name="s_a_concat")
                 self._A = tf_deep_net(s_a_concat, [self.nn_size[0] + self.ac_shape[0]], 'float32', 'A_network',
                                       self.nn_size[1:], use_ln=self.use_layer_norm, use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=[1])[:, 0]
             if self.advantage_learning:
-                self._V = tf_deep_net(self._states_feed, self.ob_shape, self.ob_dtype, 'V', self.nn_size, use_ln=self.use_layer_norm,
+                states = self._tf_normalize_states(
+                    self._states_feed, 'normalized_states', self._is_training_critic)
+                self._V = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'V', self.nn_size, use_ln=self.use_layer_norm,
                                       use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=[1])[:, 0]
                 self._Q = tf.add(self._V, self._A, name='Q')
             else:
@@ -81,7 +118,7 @@ class DDPG_Model_Base:
         return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/model/{1}'.format(self.name, extra_scope))
 
     def _get_tf_perturbable_variables(self, extra_scope=''):
-        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name)]
+        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_transform' in var.name)]
 
     def _get_update_ops(self, extra_scope=''):
         return tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/model/{1}'.format(self.name, extra_scope))
@@ -150,12 +187,12 @@ class DDPG_Model_Base:
 
 
 class DDPG_Model_Main(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, ob_shape, ac_shape, softmax_actor, nn_size,
-                 ob_dtype, lr, a_lr, init_scale, advantage_learning, use_layer_norm,
+    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, nn_size,
+                 lr, a_lr, init_scale, advantage_learning, use_layer_norm,
                  use_batch_norm, use_norm_actor, l2_reg, a_l2_reg, clip_norm,
-                 a_clip_norm, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
-        super().__init__(session=session, name=name, ob_shape=ob_shape, ac_shape=ac_shape, softmax_actor=softmax_actor, nn_size=nn_size, ob_dtype=ob_dtype, init_scale=init_scale, advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
-                         use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_action_feed=log_transform_action_feed, log_transform_max_x=log_transform_max_x, log_transform_t=log_transform_t)
+                 a_clip_norm, log_transform_inputs, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
+                         use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         with tf.variable_scope(name):
             self._setup_states_feed()
             self._setup_actor()
@@ -337,9 +374,9 @@ class DDPG_Model_Main(DDPG_Model_Base):
 
 
 class DDPG_Model_Target(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_shape, ac_shape, softmax_actor, nn_size, ob_dtype, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, tau, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
-        super().__init__(session=session, name=name, ob_shape=ob_shape, ac_shape=ac_shape, softmax_actor=softmax_actor, nn_size=nn_size, ob_dtype=ob_dtype, init_scale=init_scale, advantage_learning=advantage_learning,
-                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_action_feed=log_transform_action_feed, log_transform_max_x=log_transform_max_x, log_transform_t=log_transform_t)
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_space, ac_space, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, tau, log_transform_inputs, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
+                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         self.main_network = main_network
         self.tau = tau
         with tf.variable_scope(name):
@@ -365,8 +402,8 @@ class DDPG_Model_Target(DDPG_Model_Base):
                 soft_update_op = to_var.assign(
                     self.tau * from_var + (1 - self.tau) * to_var)
                 self._update_network_op.append(hard_update_op)
-                if from_var not in from_vars_trainable:
-                    soft_update_op = hard_update_op
+                # if from_var not in from_vars_trainable:
+                #     soft_update_op = hard_update_op
                 self._soft_update_network_op.append(soft_update_op)
 
     def soft_update_from_main_network(self):
@@ -377,9 +414,9 @@ class DDPG_Model_Target(DDPG_Model_Base):
 
 
 class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_shape, ac_shape, softmax_actor, nn_size, ob_dtype, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_action_feed, log_transform_max_x, log_transform_t, **kwargs):
-        super().__init__(session=session, name=name, ob_shape=ob_shape, ac_shape=ac_shape, softmax_actor=softmax_actor, nn_size=nn_size, ob_dtype=ob_dtype, init_scale=init_scale, advantage_learning=advantage_learning,
-                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_action_feed=log_transform_action_feed, log_transform_max_x=log_transform_max_x, log_transform_t=log_transform_t)
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_space, ac_space, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
+                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         self.main_network = main_network
         self.target_divergence = target_divergence
         self._main_network_actor_params = self.main_network._get_tf_variables(

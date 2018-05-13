@@ -47,23 +47,83 @@ def tf_log_transform(inputs, max_x, t, scope, is_input_normalized=True):
         return tf.log(1 + x / t) / tf.log(1 + max_x / t)
 
 
+def tf_log_transform_adaptive(inputs, scope, max_inputs=1, uniform_beta=False, beta=None):
+    with tf.variable_scope(scope):
+        if beta is None:
+            if uniform_beta:
+                beta = tf.Variable(1.0, name='beta', dtype=tf.float32)
+            else:
+                inputs_shape = inputs.shape.as_list()[1:]
+                beta = tf.Variable(
+                    np.ones(inputs_shape, dtype=np.float32), name='beta')
+            beta = tf.square(beta, name='beta_squared')
+            # beta = tf.Print(beta, [beta])
+        epsilon = 1e-3
+        return tf.log(1 + beta * inputs) / (tf.log(1 + beta * max_inputs) + epsilon)
+
+
 def tf_safe_softmax(inputs, scope):
     with tf.variable_scope(scope):
-        exp = tf.exp(tf.minimum(inputs, 0))
+        x = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        # exp = tf.exp(tf.minimum(inputs, 0))
+        exp = tf.exp(x)
         sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
         return exp / sigma
+    # return tf_safe_softmax_with_non_uniform_individual_constraints(inputs, [0.1875] * 25, scope)
 
 
-def tf_safe_softmax_with_individual_constraints(inputs, max_output, scope):
+def tf_safe_softmax_with_uniform_individual_constraints(inputs, max_output, scope):
     with tf.variable_scope(scope):
         dimensions = reduce(mul, inputs.shape.as_list()[1:], 1)
         if max_output < 1 / dimensions or max_output > 1:
             raise ValueError(
                 "max_output needs to be in range [1/dimensions, 1]")
-        exp = tf.exp(tf.minimum(inputs, 0))
+        # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        y = tf.minimum(inputs, 0)
+        exp = tf.exp(y)
         sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
         epsilon = dimensions * (1 - max_output) / (dimensions * max_output - 1)
         return (exp + epsilon / dimensions) / (sigma + epsilon)
+
+
+def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, contraints, scope):
+    with tf.variable_scope(scope):
+        inputs_shape = inputs.shape.as_list()[1:]
+        dimensions = reduce(mul, inputs_shape, 1)
+        contraints = np.asarray(contraints)
+        if list(contraints.shape) != inputs_shape:
+            raise ValueError('shape of constraints {0} was not compatible with shape of inputs {1}'.format(
+                contraints.shape, inputs_shape))
+        if np.any(contraints < 0) or np.any(contraints > 1):
+            raise ValueError(
+                "contraints needs to be in range [0, 1]")
+        if np.sum(contraints) <= 1:
+            raise ValueError("sum of constrains need to be greater than 1")
+
+        # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        y = tf.minimum(inputs, 0)
+        exp = tf.exp(y)
+        sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
+
+        '''
+        for some epsilons vector,
+        our output z needs to be (exp + epsilons)/(sigma + sum(epsilons))
+        to satisfy the contraints, we get the following set of linear equations:
+        for all i:
+            (constraints[i] - 1) * epsilons[i] + constraints[i] * sum(epsilons[except i]) = 1 - constraints[i]
+        '''
+        contraints_flat = contraints.flatten()
+        # to solve the epsilons linear equation:
+        # coefficient matrix:
+        coeffs = np.array([[(contraints_flat[row] - 1 if col == row else contraints_flat[row])
+                            for col in range(dimensions)] for row in range(dimensions)])
+        constants = np.array([1 - contraints_flat[row]
+                              for row in range(dimensions)])
+        epsilons_flat = np.linalg.solve(coeffs, constants)
+        epsilons = np.reshape(epsilons_flat, inputs_shape)
+        logger.log("episilons are {0}".format(epsilons), level=logger.DEBUG)
+        epsilons_sigma = np.sum(epsilons)
+        return (exp + epsilons) / (sigma + epsilons_sigma)
 
 
 def tf_conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):
