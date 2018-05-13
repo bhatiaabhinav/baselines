@@ -242,12 +242,19 @@ class MMDPObsStackWrapper(gym.Wrapper):
 
 class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
 
-    def __init__(self, env):
+    def __init__(self, env: gym.Env):
         super().__init__(env)
         self.nzones = self.metadata['nzones']
         self.nresources = self.metadata['nresources']
+        ac_space_low = np.zeros(env.action_space.shape)
+        ac_space_high = env.action_space.high / self.nresources
+        assert np.all(
+            ac_space_high <= 1), 'Invalid action space. Individual capacities must be less than or equal the global capacity'
+        assert np.sum(
+            ac_space_high) > 1, 'Invalid action space. Sum of individual capacities must be greater than global capacity'
         self.action_space = gym.spaces.Box(
-            0, 1, shape=[self.nzones], dtype=np.float32)
+            low=ac_space_low, high=ac_space_high, dtype=np.float32)
+        logger.log('ac space high: {0}'.format(self.action_space.high))
 
     def reset(self):
         self.obs = self.env.reset()
@@ -260,9 +267,14 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
         if abs(sum(action) - 1) > 1e-6:
             raise error.InvalidAction(
                 "Invalid action. The action must sum to 1. Provided action was {0}".format(action))
-        if np.any(action < -0.0):
-            raise ValueError(
-                "Each dimension of action must be >=0. Provided action was {0}".format(action))
+        try:
+            if np.any(action < -0.0):
+                raise ValueError(
+                    "Each dimension of action must be >=0. Provided action was {0}".format(action))
+        except Exception as e:
+            print(e)
+            print(action)
+            raise e
         allocation_fraction = action * self.nresources
         allocation = np.round(allocation_fraction)
         # print(allocation)
@@ -304,6 +316,11 @@ class MMDPObsNormalizeWrapper(gym.Wrapper):
         self.metadata['demand_log_transform_t'] = self.demand_log_transform_t
         self.metadata['max_demand'] = self.max_demand
         self.metadata['max_alloc'] = self.max_alloc
+        logger.log('obs space high: {0}'.format(self.observation_space.high))
+
+    def _transform(self, x, max_x, t):
+        # return self._log_transform(x, max_x, t)
+        return x / max_x
 
     def _log_transform(self, x, max_x, t):
         return np.log(1 + x / t) / np.log(1 + max_x / t)
@@ -312,11 +329,11 @@ class MMDPObsNormalizeWrapper(gym.Wrapper):
         obs = np.copy(obs)
         logger.log('demand: {0}'.format(
             np.round(obs[0:self.nzones], 2)), level=logger.DEBUG)
-        obs[0:self.nzones] = self._log_transform(
+        obs[0:self.nzones] = self._transform(
             obs[0:self.nzones], self.max_demand, self.demand_log_transform_t)
         logger.log('cur_alloc: {0}'.format(
             np.round(obs[self.nzones: 2 * self.nzones], 2)), level=logger.DEBUG)
-        obs[self.nzones: 2 * self.nzones] = self._log_transform(
+        obs[self.nzones: 2 * self.nzones] = self._transform(
             obs[self.nzones: 2 * self.nzones], self.max_alloc, self.alloc_log_transform_t)
         logger.log('cur_time: {0}'.format(
             np.round(obs[-1], 2)), level=logger.DEBUG)
