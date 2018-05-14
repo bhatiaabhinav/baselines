@@ -66,10 +66,10 @@ class DDPG_Model_Base:
                 states_feed_demand = states[:, :-zones - 1]
                 states_feed_alloc = states[:, -zones - 1:-1]
                 states_feed_time = states[:, -1:]
-                states_feed_demand = tf.layers.batch_normalization(
-                    states_feed_demand, training=is_training, name='batch_norm_demand')
-                # states_feed_demand = tf_log_transform_adaptive(
-                #     states_feed_demand, 'log_transform_demand', max_inputs=self.ob_high[:-zones - 1], uniform_beta=True)
+                # states_feed_demand = tf.layers.batch_normalization(
+                #     states_feed_demand, training=is_training, name='batch_norm_demand')
+                states_feed_demand = tf_log_transform_adaptive(
+                    states_feed_demand, 'log_transform_demand', max_inputs=self.ob_high[:-zones - 1], uniform_beta=True)
                 # states_feed_alloc = tf.layers.batch_normalization(
                 #     states_feed_alloc, training=is_training, name='batch_norm_alloc')
                 states_feed_alloc = tf_log_transform_adaptive(
