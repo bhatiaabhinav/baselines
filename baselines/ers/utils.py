@@ -47,19 +47,30 @@ def tf_log_transform(inputs, max_x, t, scope, is_input_normalized=True):
         return tf.log(1 + x / t) / tf.log(1 + max_x / t)
 
 
-def tf_log_transform_adaptive(inputs, scope, max_inputs=1, uniform_beta=False, beta=None):
+def tf_log_transform_adaptive(inputs, scope, max_inputs=1, uniform_gamma=False, gamma=None, shift=True, scale=True):
     with tf.variable_scope(scope):
-        if beta is None:
-            if uniform_beta:
-                beta = tf.Variable(1.0, name='beta', dtype=tf.float32)
+        inputs_shape = inputs.shape.as_list()[1:]
+        if gamma is None:
+            if uniform_gamma:
+                gamma = tf.Variable(1.0, name='gamma', dtype=tf.float32)
             else:
-                inputs_shape = inputs.shape.as_list()[1:]
-                beta = tf.Variable(
-                    np.ones(inputs_shape, dtype=np.float32), name='beta')
-            beta = tf.square(beta, name='beta_squared')
-            # beta = tf.Print(beta, [beta])
+                gamma = tf.Variable(
+                    np.ones(inputs_shape, dtype=np.float32), name='gamma')
+            gamma = tf.square(gamma, name='gamma_squared')
+            # gamma = tf.abs(gamma, name='gamma_abs')
+            # gamma = tf.Print(gamma, [gamma])
         epsilon = 1e-3
-        return tf.log(1 + beta * inputs) / (tf.log(1 + beta * max_inputs) + epsilon)
+        log_transform = tf.log(1 + gamma * inputs) / (tf.log(1 + gamma * max_inputs) + epsilon)
+        log_transform_normalized = 2 * log_transform - 1
+        # if scale:
+        #     alpha = tf.Variable(
+        #         np.ones(inputs_shape, dtype=np.float32), name='alpha')
+        #     log_transform_normalized = alpha * log_transform_normalized
+        # if shift:
+        #     beta = tf.Variable(
+        #         np.zeros(inputs_shape, dtype=np.float32), name='beta')
+        #     log_transform_normalized = log_transform_normalized + beta
+        return log_transform_normalized
 
 
 def tf_safe_softmax(inputs, scope):

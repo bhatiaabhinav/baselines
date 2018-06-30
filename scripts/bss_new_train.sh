@@ -4,7 +4,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--test_seed=42 \
 	--ob_dtype=float32 \
 	--nstack=3 \
-	--nn_size="[128,64]" \
+	--nn_size="[400,300]" \
 	--softmax_actor=True \
 	--log_transform_inputs=True \
 	--tau=0.001 \
@@ -20,10 +20,10 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--l2_reg=1e-2 \
 	--train_every=2 \
 	--exploit_every=4 \
-	--logger_level=DEBUG \
+	--logger_level=INFO \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=ddpg_bss
+	--run_no_prefix=ddpg_nips5_seed_0
 # --saved_model=$OPENAI_LOGDIR/BSSEnv-v0/ddpg_bss_001/model \
-# --test_mode=True
+# --test_mode=True \
 # --render=True \

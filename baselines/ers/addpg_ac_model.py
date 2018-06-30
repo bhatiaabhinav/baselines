@@ -69,11 +69,12 @@ class DDPG_Model_Base:
                 # states_feed_demand = tf.layers.batch_normalization(
                 #     states_feed_demand, training=is_training, name='batch_norm_demand')
                 states_feed_demand = tf_log_transform_adaptive(
-                    states_feed_demand, 'log_transform_demand', max_inputs=self.ob_high[:-zones - 1], uniform_beta=True)
+                    states_feed_demand, 'log_transform_demand', max_inputs=self.ob_high[:-zones - 1], uniform_gamma=True)
                 # states_feed_alloc = tf.layers.batch_normalization(
                 #     states_feed_alloc, training=is_training, name='batch_norm_alloc')
                 states_feed_alloc = tf_log_transform_adaptive(
-                    states_feed_alloc, 'log_transform_alloc', max_inputs=self.ob_high[-zones - 1:-1], uniform_beta=True)
+                    states_feed_alloc, 'log_transform_alloc', max_inputs=self.ob_high[-zones - 1:-1], uniform_gamma=True)
+                states_feed_time = 2 * states_feed_time - 1
                 states = tf.concat(
                     [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
                 # states = tf.layers.batch_normalization(
@@ -94,7 +95,7 @@ class DDPG_Model_Base:
                                                  self.nn_size[0:1], use_ln=self.use_layer_norm, use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=None)
                 if self.log_transform_inputs:
                     a = tf_log_transform_adaptive(
-                        self._a, scope='log_transform', uniform_beta=True, max_inputs=self.ac_high)
+                        self._a, scope='log_transform', uniform_gamma=True, max_inputs=self.ac_high)
                 else:
                     a = tf.layers.batch_normalization(
                         self._a, training=self._is_training_critic, name='batch_norm')
@@ -518,7 +519,8 @@ class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
         return noise_safe
 
     def adapt_sigma(self, divergence):
-        multiplier = 1 + abs(divergence - self.target_divergence)
+        # multiplier = 1 + abs(divergence - self.target_divergence)
+        multiplier = 1.01
         if divergence < self.target_divergence:
             self.adaptive_sigma = self.adaptive_sigma * multiplier
         else:
