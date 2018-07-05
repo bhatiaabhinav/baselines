@@ -20,7 +20,9 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
     --logger_level=INFO \
     --use_batch_norm=False \
     --use_layer_norm=True \
-    --run_no_prefix=ddpg \
-    # --render=True \
-    # --test_mode=True \
-    # --saved_model=$OPENAI_LOGDIR/$1/ddpg_002/model
+    --run_no_prefix=$2_test \
+    --render=True \
+    --test_mode=True \
+    --saved_model=$OPENAI_LOGDIR/$1/$2/model \
+    --load_every=10 \
+    --test_episodes=1000000

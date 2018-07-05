@@ -84,6 +84,7 @@ def parse():
     parser.add_argument('--exploit_every', type=int, default=4)
     parser.add_argument('--log_every', type=int, default=100)
     parser.add_argument('--save_every', type=int, default=50)
+    parser.add_argument('--load_every', type=int, default=100000)
     parser.add_argument('--use_ga_optimization', type=str2bool, default=False)
     parser.add_argument('--training_episodes', type=int, default=10000)
     parser.add_argument('--run_no_prefix', default='run')

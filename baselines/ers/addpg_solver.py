@@ -164,7 +164,7 @@ def ga_optimize_actor(model: DDPG_Model, states, mutation_fn, mutation_rate, tra
         _s = s[idx]
         _a = a[idx]
         _discovered_best_a = ga_optimize_action(
-            _s, _a, generations=4, population_size=64, truncation_size=16, mutation_fn=mutation_fn, mutation_rate=mutation_rate)
+            model, _s, _a, generations=4, population_size=64, truncation_size=16, mutation_fn=mutation_fn, mutation_rate=mutation_rate)
         discovered_best_a.append(_discovered_best_a)
         if not np.array_equiv(_a, _discovered_best_a):
             new_discoveries_count += 1
@@ -196,11 +196,18 @@ def reset_noise(model: DDPG_Model, noise, use_param_noise, use_safe_noise, exper
     else:
         noise.reset()
 
+def load_model(model: DDPG_Model, load_path):
+    try:
+        model.main.load(load_path)
+        logger.log('model loaded')
+    except Exception as ex:
+        logger.log('Failed to load model. Reason = {0}'.format(
+            ex), level=logger.ERROR)
 
 def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed=0, learning_env_seed=0,
          test_env_seed=42, learning_episodes=40000, test_episodes=100, exploration_episodes=10, train_every=1,
          mb_size=64, use_safe_noise=False, replay_buffer_length=1e6, replay_memory_size_in_bytes=None, use_param_noise=False, init_scale=1e-3, reward_scaling=1, Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, exploit_every=10,
-         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, save_path=None, load_path=None, **kwargs):
+         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, **kwargs):
     set_global_seeds(seed)
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
@@ -225,12 +232,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     else:
         model = actor
     if load_path:
-        try:
-            model.main.load(load_path)
-            logger.log('model loaded')
-        except Exception as ex:
-            logger.log('Failed to load model. Reason = {0}'.format(
-                ex), level=logger.ERROR)
+        load_model(model, load_path)
     model.target.update_from_main_network()
     noise = None
     experience_buffer = None
@@ -284,6 +286,9 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
         if save_path and ep % save_every == 0:
             model.main.save(save_path)
             logger.log('model saved')
+        if not learning and load_path is not None and ep % load_every == 0:
+            load_model(model, load_path)
+
     env.close()
     logger.log('Average reward per episode: {0}'.format(np.average(Rs)))
     logger.log('Exploitation average reward per episode: {0}'.format(
@@ -378,6 +383,9 @@ if __name__ == '__main__':
     elif 'CarRacing' in kwargs['env_id']:
         kwargs['wrappers'] = [SkipEnv, WarpFrame,
                               FrameStack, ActionSpaceNormalizeWrapper]
+    elif 'Bipedal' in kwargs['env_id']:
+        from baselines.ers.wrappers import BipedalWrapper
+        kwargs['wrappers'] = [ActionSpaceNormalizeWrapper, BipedalWrapper]
     else:
         kwargs['wrappers'] = [LinearFrameStackWrapper,
                               ActionSpaceNormalizeWrapper]

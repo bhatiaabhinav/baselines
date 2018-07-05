@@ -520,7 +520,7 @@ class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
 
     def adapt_sigma(self, divergence):
         # multiplier = 1 + abs(divergence - self.target_divergence)
-        multiplier = 1.01
+        multiplier = 1.1 if divergence < (self.target_divergence / 10) else 1.01
         if divergence < self.target_divergence:
             self.adaptive_sigma = self.adaptive_sigma * multiplier
         else:

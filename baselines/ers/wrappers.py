@@ -60,12 +60,30 @@ class LinearFrameStackWrapper(gym.Wrapper):
         self.frames.append(ob)
         return self._observation(), reward, done, info
 
-    def observation(self):
+    def _observation(self):
         assert len(self.frames) == self.k
         obs = np.concatenate(self.frames, axis=0)
         assert list(np.shape(obs)) == list(self.observation_space.shape)
         return obs
 
+class BipedalWrapper(gym.Wrapper):
+    max_episode_length = 400
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.frame_count = 0
+
+    def reset(self):
+        self.frame_count = 0
+        return self.env.reset()
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.frame_count += 1
+        if self.frame_count >= self.max_episode_length:
+            # reward -= 100
+            done = True
+        return obs, reward, done, info
 
 class DiscreteToContinousWrapper(gym.Wrapper):
     def __init__(self, env):

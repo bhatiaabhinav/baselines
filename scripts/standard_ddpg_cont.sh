@@ -21,6 +21,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
     --use_batch_norm=False \
     --use_layer_norm=True \
     --run_no_prefix=ddpg \
+    --saved_model=$OPENAI_LOGDIR/$1/$2/model
     # --render=True \
     # --test_mode=True \
-    # --saved_model=$OPENAI_LOGDIR/$1/ddpg_002/model
+
