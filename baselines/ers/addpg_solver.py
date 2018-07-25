@@ -196,6 +196,7 @@ def reset_noise(model: DDPG_Model, noise, use_param_noise, use_safe_noise, exper
     else:
         noise.reset()
 
+
 def load_model(model: DDPG_Model, load_path):
     try:
         model.main.load(load_path)
@@ -204,14 +205,19 @@ def load_model(model: DDPG_Model, load_path):
         logger.log('Failed to load model. Reason = {0}'.format(
             ex), level=logger.ERROR)
 
+
 def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed=0, learning_env_seed=0,
          test_env_seed=42, learning_episodes=40000, test_episodes=100, exploration_episodes=10, train_every=1,
          mb_size=64, use_safe_noise=False, replay_buffer_length=1e6, replay_memory_size_in_bytes=None, use_param_noise=False, init_scale=1e-3, reward_scaling=1, Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, exploit_every=10,
-         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, **kwargs):
+         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, monitor=True, video_interval=50, **kwargs):
     set_global_seeds(seed)
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
         env = W(env)  # type: gym.Wrapper
+    if monitor:
+        from baselines.ers.utils import my_video_schedule
+        env = gym.wrappers.Monitor(env, os.path.join(logger.get_dir(), 'monitor'), video_callable=lambda ep_id: my_video_schedule(
+            ep_id, learning_episodes if learning else test_episodes, video_interval))
     if actor is None:
         sys_args_dict["ob_space"] = env.observation_space
         sys_args_dict["ac_space"] = env.action_space

@@ -16,11 +16,33 @@ from baselines import logger
 from baselines.a2c.utils import conv, conv_to_fc
 
 
+def my_video_schedule(episode_id, total_episodes, video_interval):
+    from gym.wrappers.monitor import capped_cubic_video_schedule
+    if video_interval is not None and video_interval <= 0:
+        return False
+    if episode_id == total_episodes - 1:
+        return True
+    if video_interval is None:
+        return capped_cubic_video_schedule(episode_id)
+    return episode_id % video_interval == 0
+
+
 def normalize(a, epsilon=1e-6):
     a = np.clip(a, 0, 1)
     a = a + epsilon
     a = a / np.sum(a)
     return a
+
+
+def scale(a, low, high, target_low, target_high):
+    a_frac = (a - low)/(high - low)
+    a = target_low + a_frac * (target_high - target_low)
+    return a
+
+
+def tf_scale(a, low, high, target_low, target_high, scope):
+    with tf.variable_scope(scope):
+        return scale(a, low, high, target_low, target_high)
 
 
 def mutated_ers(alloc, max_mutations=2, mutation_rate=0.05):
@@ -60,17 +82,9 @@ def tf_log_transform_adaptive(inputs, scope, max_inputs=1, uniform_gamma=False, 
             # gamma = tf.abs(gamma, name='gamma_abs')
             # gamma = tf.Print(gamma, [gamma])
         epsilon = 1e-3
-        log_transform = tf.log(1 + gamma * inputs) / (tf.log(1 + gamma * max_inputs) + epsilon)
-        log_transform_normalized = 2 * log_transform - 1
-        # if scale:
-        #     alpha = tf.Variable(
-        #         np.ones(inputs_shape, dtype=np.float32), name='alpha')
-        #     log_transform_normalized = alpha * log_transform_normalized
-        # if shift:
-        #     beta = tf.Variable(
-        #         np.zeros(inputs_shape, dtype=np.float32), name='beta')
-        #     log_transform_normalized = log_transform_normalized + beta
-        return log_transform_normalized
+        log_transform = tf.log(1 + gamma * inputs) / \
+            (tf.log(1 + gamma * max_inputs) + epsilon)
+        return log_transform
 
 
 def tf_safe_softmax(inputs, scope):

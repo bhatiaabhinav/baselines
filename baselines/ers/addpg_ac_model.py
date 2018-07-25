@@ -7,7 +7,8 @@ from gym.spaces import Box
 
 from baselines import logger
 from baselines.ers.utils import (tf_deep_net, tf_log_transform_adaptive,
-                                 tf_safe_softmax_with_non_uniform_individual_constraints)
+                                 tf_safe_softmax_with_non_uniform_individual_constraints,
+                                 tf_scale)
 
 
 class DDPG_Model_Base:
@@ -17,9 +18,11 @@ class DDPG_Model_Base:
         self.session = session
         self.name = name
         self.ac_shape = ac_space.shape
+        self.ac_low = ac_space.low
         self.ac_high = ac_space.high
         self.ob_shape = ob_space.shape
         self.ob_dtype = ob_space.dtype
+        self.ob_low = ob_space.low
         self.ob_high = ob_space.high
         self.nn_size = nn_size
         self.init_scale = init_scale
@@ -62,27 +65,39 @@ class DDPG_Model_Base:
     def _tf_normalize_states(self, states, scope, is_training):
         with tf.variable_scope(scope):
             if self.log_transform_inputs:
+                states = tf_scale(states, self.ob_low,
+                                  self.ob_high, 0, 1, 'scale_0_to_1')
                 zones = self.ac_shape[0]
                 states_feed_demand = states[:, :-zones - 1]
                 states_feed_alloc = states[:, -zones - 1:-1]
                 states_feed_time = states[:, -1:]
-                # states_feed_demand = tf.layers.batch_normalization(
-                #     states_feed_demand, training=is_training, name='batch_norm_demand')
-                states_feed_demand = tf_log_transform_adaptive(
-                    states_feed_demand, 'log_transform_demand', max_inputs=self.ob_high[:-zones - 1], uniform_gamma=True)
-                # states_feed_alloc = tf.layers.batch_normalization(
-                #     states_feed_alloc, training=is_training, name='batch_norm_alloc')
+                states_feed_demand = tf.layers.batch_normalization(states_feed_demand, training=is_training, name='batch_norm')
+                # states_feed_demand = tf_log_transform_adaptive(
+                #     states_feed_demand, 'log_transform_demand', uniform_gamma=True)
                 states_feed_alloc = tf_log_transform_adaptive(
-                    states_feed_alloc, 'log_transform_alloc', max_inputs=self.ob_high[-zones - 1:-1], uniform_gamma=True)
-                states_feed_time = 2 * states_feed_time - 1
+                    states_feed_alloc, 'log_transform_alloc', uniform_gamma=True)
+                states_feed_alloc = 2*states_feed_alloc-1
+                states_feed_time = 2*states_feed_time-1
                 states = tf.concat(
                     [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
-                # states = tf.layers.batch_normalization(
-                #     states, training=is_training, name='batch_norm')
+                # states = tf_scale(states, 0, 1, -1, 1, 'scale_minus_1_to_1')
             else:
                 states = tf.layers.batch_normalization(
                     states, training=is_training, name='batch_norm')
             return states
+
+    def _tf_normalized_actions(self, actions, scope, is_training):
+        with tf.variable_scope(scope):
+            if self.log_transform_inputs:
+                actions = tf_scale(actions, self.ac_low,
+                                   self.ac_high, 0, 1, 'scale_0_to_1')
+                actions = tf_log_transform_adaptive(
+                    actions, scope='log_transform', uniform_gamma=True)
+                actions = tf_scale(actions, 0, 1, -1, 1, 'scale_minus_1_to_1')
+            else:
+                tf.layers.batch_normalization(
+                    actions, training=is_training, name='batch_norm')
+            return actions
 
     def _setup_critic(self):
         with tf.variable_scope('model/critic'):
@@ -93,12 +108,8 @@ class DDPG_Model_Base:
                     self._states_feed, 'normalized_states', self._is_training_critic)
                 s_after_one_hidden = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'one_hidden',
                                                  self.nn_size[0:1], use_ln=self.use_layer_norm, use_bn=self.use_batch_norm, training=self._is_training_critic, output_shape=None)
-                if self.log_transform_inputs:
-                    a = tf_log_transform_adaptive(
-                        self._a, scope='log_transform', uniform_gamma=True, max_inputs=self.ac_high)
-                else:
-                    a = tf.layers.batch_normalization(
-                        self._a, training=self._is_training_critic, name='batch_norm')
+                a = self._tf_normalized_actions(
+                    self._a, 'normalized_actions', self._is_training_critic)
                 s_a_concat = tf.concat(
                     [s_after_one_hidden, a], axis=-1, name="s_a_concat")
                 self._A = tf_deep_net(s_a_concat, [self.nn_size[0] + self.ac_shape[0]], 'float32', 'A_network',
@@ -519,8 +530,8 @@ class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
         return noise_safe
 
     def adapt_sigma(self, divergence):
-        # multiplier = 1 + abs(divergence - self.target_divergence)
-        multiplier = 1.1 if divergence < (self.target_divergence / 10) else 1.01
+        multiplier = 1.15 if max(divergence, self.target_divergence) / \
+            (min(divergence, self.target_divergence) + 1e-6) >= 10 else 1.05
         if divergence < self.target_divergence:
             self.adaptive_sigma = self.adaptive_sigma * multiplier
         else:

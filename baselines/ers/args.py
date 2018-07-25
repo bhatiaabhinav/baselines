@@ -106,15 +106,18 @@ def parse():
     parser.add_argument('--test_seed', type=int, default=42)
     parser.add_argument('--print_precision', type=int, default=2)
     parser.add_argument('--logger_level', type=str2level, default='INFO')
-
+    parser.add_argument('--monitor', type=str2bool, default=False)
+    parser.add_argument('--video_interval', type=int, default=None,
+                        help='Capped_cubic_interval by default. Set to 0 to disable video recording. Set to N to records every N episodes')
     args = parser.parse_args()
 
     np.set_printoptions(precision=args.print_precision, linewidth=200)
 
     if args.logdir:
         for run_no in range(int(1e6)):
-            logdir = os.path.join(args.logdir, args.env, args.run_no_prefix +
-                                  '_' + str(run_no).zfill(3))
+            suffix = '_' + str(run_no).zfill(3) if run_no > 0 else ''
+            logdir = os.path.join(args.logdir, args.env,
+                                  args.run_no_prefix + suffix)
             if not os.path.isdir(logdir):
                 os.putenv('OPENAI_LOGDIR', logdir)
                 logger.reset()

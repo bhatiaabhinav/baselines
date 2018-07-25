@@ -1,5 +1,5 @@
 $GYM_PYTHON -m baselines.ers.addpg_solver \
-	--env=$ENV \
+	--env=$1 \
 	--seed=0 \
 	--test_seed=42 \
 	--ob_dtype=float32 \
@@ -8,9 +8,10 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--softmax_actor=True \
 	--log_transform_inputs=True \
 	--tau=0.001 \
+	--gamma=1 \
 	--exploration_episodes=10 \
 	--use_param_noise=True \
-	--use_safe_noise=True \
+	--use_safe_noise=False \
 	--exploration_theta=1 \
 	--training_episodes=20000 \
 	--mb_size=128 \
@@ -23,12 +24,4 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--logger_level=INFO \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=ddpg_nips5_seed_0
-# --render=True \
-# --test_mode=True \
-# --saved_model=$OPENAI_LOGDIR/$ENV/ddpg_new_000/model
-# nips was batch norm for obs
-# nips2 was log norm for both
-# nips3 was abs for gamma
-# nips4 was epsilon inside log and also fixed adaptive noise scale param
-# nips5 is with shift and scale
+	--run_no_prefix=$2

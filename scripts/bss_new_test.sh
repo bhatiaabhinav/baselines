@@ -1,5 +1,5 @@
 $GYM_PYTHON -m baselines.ers.addpg_solver \
-	--env=BSSEnv-$1 \
+	--env=BSSEnvTest-$1 \
 	--seed=0 \
 	--test_seed=42 \
 	--ob_dtype=float32 \
@@ -24,4 +24,6 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--logger_level=INFO \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=$2
+	--run_no_prefix=$2_test \
+	--test_mode=True \
+	--saved_model=$OPENAI_LOGDIR/BSSEnv-$1/$2/model

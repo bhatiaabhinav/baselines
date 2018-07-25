@@ -4,6 +4,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
     --nstack=3 \
     --nn_size="[64,64]" \
     --tau=0.001 \
+    --gamma=0.99 \
     --exploration_episodes=10 \
     --use_param_noise=True \
     --use_safe_noise=False \
@@ -21,6 +22,8 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
     --use_batch_norm=False \
     --use_layer_norm=True \
     --run_no_prefix=ddpg \
+    --monitor=True \
+    --video_interval=50
     # --render=True \
     # --test_mode=True \
     # --saved_model=$OPENAI_LOGDIR/$1/ddpg_002/model
