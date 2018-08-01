@@ -1,7 +1,7 @@
 $GYM_PYTHON -m baselines.ers.addpg_solver \
     --env=$1 \
     --ob_dtype=float32 \
-    --nstack=3 \
+    --nstack=1 \
     --nn_size="[64,64]" \
     --tau=0.001 \
     --gamma=0.99 \
@@ -21,7 +21,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
     --logger_level=INFO \
     --use_batch_norm=False \
     --use_layer_norm=True \
-    --run_no_prefix=ddpg \
+    --run_no_prefix=$2 \
     --monitor=True \
     --video_interval=50
     # --render=True \

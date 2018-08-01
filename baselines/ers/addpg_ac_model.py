@@ -10,6 +10,49 @@ from baselines.ers.utils import (tf_deep_net, tf_log_transform_adaptive,
                                  tf_safe_softmax_with_non_uniform_individual_constraints,
                                  tf_scale)
 
+class RunningStats:
+
+    def __init__(self, session: tf.Session, shape, epsilon=1e-2):
+        self.n = 0
+        self.old_m = np.zeros(shape=shape)
+        self.new_m = np.zeros(shape=shape)
+        self.old_s = np.zeros(shape=shape)
+        self.new_s = np.zeros(shape=shape)
+        self.session = session
+        self.shape = shape
+        self.epsilon = epsilon
+        self.mean = tf.get_variable(dtype=tf.float32, shape=shape, initializer=tf.constant_initializer(0.0), name="running_mean", trainable=False)
+        self.std = tf.get_variable(dtype=tf.float32, shape=shape, initializer=tf.constant_initializer(epsilon), name="running_std", trainable=False)
+            
+
+    def setup_update(self):
+        self._mean_placeholder = tf.placeholder(dtype=tf.float32, shape=self.shape, name="running_mean_placeholder")
+        self._std_placeholder = tf.placeholder(dtype=tf.float32, shape=self.shape, name="running_std_placeholer")
+        self._set_mean = tf.assign(self.mean, self._mean_placeholder)
+        self._set_std = tf.assign(self.std, self._std_placeholder)
+
+    def update(self, x):
+        self.n += 1
+
+        if self.n == 1:
+            self.old_m = self.new_m = x
+            self.old_s = np.zeros(shape=self.shape)
+        else:
+            self.new_m = self.old_m + (x - self.old_m) / self.n
+            self.new_s = self.old_s + (x - self.old_m) * (x - self.new_m)
+
+            self.old_m = self.new_m
+            self.old_s = self.new_s
+
+        mean = self.new_m if self.n else np.zeros(shape=self.shape)
+        variance = self.new_s / (self.n - 1) if self.n > 1 else np.zeros(shape=self.shape)
+        variance = np.maximum(variance, self.epsilon)
+        std =  np.sqrt(variance)
+
+        self.session.run([self._set_mean, self._set_std], feed_dict={
+            self._mean_placeholder: mean,
+            self._std_placeholder: std
+        })
 
 class DDPG_Model_Base:
     def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
@@ -41,6 +84,10 @@ class DDPG_Model_Base:
         self._states_feed = tf.placeholder(dtype=self.ob_dtype, shape=[
                                            None] + list(self.ob_shape), name="states_feed")
 
+    def _setup_running_ob_stats(self):
+        with tf.variable_scope('model/running_ob_stats'):
+            self._ob_stats = RunningStats(self.session, self.ob_shape)
+
     def _setup_actor(self):
         with tf.variable_scope('model/actor'):
             self._is_training_a = tf.placeholder(
@@ -71,7 +118,8 @@ class DDPG_Model_Base:
                 states_feed_demand = states[:, :-zones - 1]
                 states_feed_alloc = states[:, -zones - 1:-1]
                 states_feed_time = states[:, -1:]
-                states_feed_demand = tf.layers.batch_normalization(states_feed_demand, training=is_training, name='batch_norm')
+                states_feed_demand = (states_feed_demand - self._ob_stats.mean[:-zones-1])/self._ob_stats.std[:-zones-1]
+                # states_feed_demand = tf.layers.batch_normalization(states_feed_demand, training=is_training, name='batch_norm')
                 # states_feed_demand = tf_log_transform_adaptive(
                 #     states_feed_demand, 'log_transform_demand', uniform_gamma=True)
                 states_feed_alloc = tf_log_transform_adaptive(
@@ -82,8 +130,9 @@ class DDPG_Model_Base:
                     [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
                 # states = tf_scale(states, 0, 1, -1, 1, 'scale_minus_1_to_1')
             else:
-                states = tf.layers.batch_normalization(
-                    states, training=is_training, name='batch_norm')
+                # states = tf.layers.batch_normalization(
+                #     states, training=is_training, name='batch_norm')
+                states = (states - self._ob_stats.mean) / self._ob_stats.std
             return states
 
     def _tf_normalized_actions(self, actions, scope, is_training):
@@ -95,8 +144,9 @@ class DDPG_Model_Base:
                     actions, scope='log_transform', uniform_gamma=True)
                 actions = tf_scale(actions, 0, 1, -1, 1, 'scale_minus_1_to_1')
             else:
-                tf.layers.batch_normalization(
-                    actions, training=is_training, name='batch_norm')
+                # actions = tf.layers.batch_normalization(
+                #     actions, training=is_training, name='batch_norm')
+                ...
             return actions
 
     def _setup_critic(self):
@@ -130,7 +180,7 @@ class DDPG_Model_Base:
         return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/model/{1}'.format(self.name, extra_scope))
 
     def _get_tf_perturbable_variables(self, extra_scope=''):
-        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_transform' in var.name)]
+        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_transform' in var.name or 'running_ob_stats' in var.name)]
 
     def _get_update_ops(self, extra_scope=''):
         return tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/model/{1}'.format(self.name, extra_scope))
@@ -207,11 +257,17 @@ class DDPG_Model_Main(DDPG_Model_Base):
                          use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         with tf.variable_scope(name):
             self._setup_states_feed()
+            self._setup_running_ob_stats()
+            self._setup_running_ob_stats_update()
             self._setup_actor()
             self._setup_critic()
             self._setup_training(
                 a_lr=a_lr, a_l2_reg=a_l2_reg, a_clip_norm=a_clip_norm, lr=lr, l2_reg=l2_reg, clip_norm=clip_norm)
             self._setup_saving_loading_ops()
+
+    def _setup_running_ob_stats_update(self):
+        with tf.variable_scope('update_running_ob_stats'):
+            self._ob_stats.setup_update()
 
     def _setup_actor_training(self, a_l2_reg, a_clip_norm):
         with tf.variable_scope('optimize_actor'):
@@ -329,6 +385,9 @@ class DDPG_Model_Main(DDPG_Model_Base):
                 self._load_placeholders.append(p_placeholder)
                 self._load_ops.append(p.assign(p_placeholder))
 
+    def update_running_ob_stats(self, obs):
+        self._ob_stats.update(obs)
+
     def train_V(self, states, target_V):
         return self.session.run([self._train_V_op, self._V_mse], feed_dict={
             self._states_feed: states,
@@ -393,6 +452,7 @@ class DDPG_Model_Target(DDPG_Model_Base):
         self.tau = tau
         with tf.variable_scope(name):
             self._setup_states_feed()
+            self._setup_running_ob_stats()
             self._setup_actor()
             self._setup_critic()
             self._setup_update_from_main_network()
@@ -416,6 +476,9 @@ class DDPG_Model_Target(DDPG_Model_Base):
                 self._update_network_op.append(hard_update_op)
                 # if from_var not in from_vars_trainable:
                 #     soft_update_op = hard_update_op
+                if 'running_ob_stats' in from_var.name:
+                    soft_update_op = hard_update_op
+                    logger.log('Variable {0} will be hard updated to target network'.format(from_var.name))
                 self._soft_update_network_op.append(soft_update_op)
 
     def soft_update_from_main_network(self):
@@ -431,12 +494,13 @@ class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
                          use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         self.main_network = main_network
         self.target_divergence = target_divergence
-        self._main_network_actor_params = self.main_network._get_tf_variables(
-            'actor')
-        self._main_network_actor_params_perturbable = self.main_network._get_tf_perturbable_variables(
-            'actor')
+        self._main_network_params = self.main_network._get_tf_variables()
+        self._main_network_actor_params = list(filter(lambda p: 'critic' not in p.name, self._main_network_params))
+        self._main_network_params_perturbable = self.main_network._get_tf_perturbable_variables()
+        self._main_network_actor_params_perturbable = list(filter(lambda p: 'critic' not in p.name, self._main_network_params_perturbable))
         with tf.variable_scope(name):
             self._setup_states_feed()
+            self._setup_running_ob_stats()
             self._setup_actor()
             # dont setup critic for this one
             self._setup_update_from_main_network()
