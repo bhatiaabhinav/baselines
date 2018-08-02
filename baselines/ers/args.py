@@ -104,6 +104,7 @@ def parse():
     parser.add_argument('--analysis_mode', type=str2bool, default=False)
     parser.add_argument('--test_episodes', type=int, default=100)
     parser.add_argument('--test_seed', type=int, default=42)
+    parser.add_argument('--wolpertinger_critic_train', type=str2bool, default=False)
     parser.add_argument('--print_precision', type=int, default=2)
     parser.add_argument('--logger_level', type=str2level, default='INFO')
     parser.add_argument('--monitor', type=str2bool, default=False)

@@ -211,7 +211,7 @@ def load_model(model: DDPG_Model, load_path):
 def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed=0, learning_env_seed=0,
          test_env_seed=42, learning_episodes=40000, test_episodes=100, exploration_episodes=10, train_every=1,
          mb_size=64, use_safe_noise=False, replay_buffer_length=1e6, replay_memory_size_in_bytes=None, use_param_noise=False, init_scale=1e-3, reward_scaling=1, Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, exploit_every=10,
-         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, monitor=True, video_interval=50, **kwargs):
+         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, softmax_actor=False, wolpertinger_critic_train=False, monitor=True, video_interval=50, **kwargs):
     set_global_seeds(seed)
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
@@ -244,6 +244,9 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     model.target.update_from_main_network()
     noise = None
     experience_buffer = None
+    action_rounder = None  # type: MMDPActionRounder
+    if softmax_actor and wolpertinger_critic_train:
+        action_rounder = MMDPActionRounder(env)
     if learning:
         experience_buffer = ExperienceBuffer(
             length=replay_buffer_length, size_in_bytes=replay_memory_size_in_bytes)
@@ -269,7 +272,9 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
                     ga_optimize_actor(model, experience_buffer.random_states(
                         mb_size), mutation_fn, exploration_sigma, train_steps=100)
             a = get_action(model=model, obs=obs, env=env, action_noise=noise,
-                           use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action=('ERS' in env_id or 'BSS' in env_id), log=should_log, f=f)
+                           use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action=softmax_actor, log=should_log, f=f)
+            if softmax_actor and wolpertinger_critic_train:
+                a = action_rounder.round_action(a)
             obs_, r, d, _ = env.step(a)
             r = r * reward_scaling
             if render:
@@ -374,11 +379,13 @@ if __name__ == '__main__':
     FrameStack.k = args.nstack
     LinearFrameStackWrapper.k = args.nstack
     if 'ERSEnv-ca' in kwargs['env_id']:
-        kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper, MMDPActionRounderWrapper,
+        kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
+                              gym.Wrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
         kwargs['softmax_actor'] = True
     elif 'BSSEnv' in kwargs['env_id']:
-        kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper, MMDPActionRounderWrapper,
+        kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
+                              gym.Wrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
         kwargs['softmax_actor'] = True
     elif 'ERSEnv-im' in kwargs['env_id']:

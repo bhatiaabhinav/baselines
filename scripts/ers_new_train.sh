@@ -6,6 +6,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--nstack=3 \
 	--nn_size="[128,96]" \
 	--softmax_actor=True \
+	--wolpertinger_critic_train=False \
 	--log_transform_inputs=True \
 	--tau=0.001 \
 	--gamma=1 \

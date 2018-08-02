@@ -266,6 +266,7 @@ class MMDPActionRounder:
         self.nresources = self.env.metadata['nresources']
 
     def round_action(self, action):
+        # print('inside rounder')
         action = self.get_allocation(action) / self.nresources
         return action
 
@@ -305,7 +306,7 @@ class MMDPActionRounder:
 
 
 class MMDPActionRounderWrapper(gym.Wrapper):
-    """Must wrap MMDPActionSpaceNormalizerWrapper. i.e. assumes action space to be normalized"""
+    """Must wrap MMDPActionSpaceNormalizerWrapper. i.e. assumes action space is already normalized"""
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
@@ -315,6 +316,7 @@ class MMDPActionRounderWrapper(gym.Wrapper):
         return self.env.reset()
 
     def step(self, action):
+        # print("inside action round wrapper")
         rounded_action = self.action_rounder.round_action(action)
         return self.env.step(rounded_action)
 
