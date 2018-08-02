@@ -103,8 +103,8 @@ def tf_safe_softmax_with_uniform_individual_constraints(inputs, max_output, scop
         if max_output < 1 / dimensions or max_output > 1:
             raise ValueError(
                 "max_output needs to be in range [1/dimensions, 1]")
-        y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
-        # y = tf.minimum(inputs, 0)
+        # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        y = tf.minimum(inputs, 0)
         exp = tf.exp(y)
         sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
         epsilon = dimensions * (1 - max_output) / (dimensions * max_output - 1)
@@ -125,8 +125,8 @@ def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, contraints, 
         if np.sum(contraints) <= 1:
             raise ValueError("sum of constrains need to be greater than 1")
 
-        y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
-        # y = tf.minimum(inputs, 0)
+        # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        y = tf.minimum(inputs, 0)
         exp = tf.exp(y)
         sigma = tf.reduce_sum(exp, axis=-1, keepdims=True, name='sum')
 
