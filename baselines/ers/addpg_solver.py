@@ -29,6 +29,8 @@ from baselines.ers.wrappers import (ActionSpaceNormalizeWrapper,
                                     BSStoMMDPWrapper, CartPoleWrapper,
                                     ERSEnvImWrapper, ERSEnvWrapper,
                                     ERStoMMDPWrapper, LinearFrameStackWrapper,
+                                    MMDPActionRounder,
+                                    MMDPActionRounderWrapper,
                                     MMDPActionSpaceNormalizerWrapper,
                                     MMDPObsNormalizeWrapper,
                                     MMDPObsStackWrapper)
@@ -372,11 +374,11 @@ if __name__ == '__main__':
     FrameStack.k = args.nstack
     LinearFrameStackWrapper.k = args.nstack
     if 'ERSEnv-ca' in kwargs['env_id']:
-        kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
+        kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper, MMDPActionRounderWrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
         kwargs['softmax_actor'] = True
     elif 'BSSEnv' in kwargs['env_id']:
-        kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
+        kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper, MMDPActionRounderWrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
         kwargs['softmax_actor'] = True
     elif 'ERSEnv-im' in kwargs['env_id']:

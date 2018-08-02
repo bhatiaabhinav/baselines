@@ -66,6 +66,7 @@ class LinearFrameStackWrapper(gym.Wrapper):
         assert list(np.shape(obs)) == list(self.observation_space.shape)
         return obs
 
+
 class BipedalWrapper(gym.Wrapper):
     max_episode_length = 400
 
@@ -84,6 +85,7 @@ class BipedalWrapper(gym.Wrapper):
             # reward -= 100
             done = True
         return obs, reward, done, info
+
 
 class DiscreteToContinousWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -258,28 +260,16 @@ class MMDPObsStackWrapper(gym.Wrapper):
         return self._observation(), r, d, info
 
 
-class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
-
+class MMDPActionRounder:
     def __init__(self, env: gym.Env):
-        super().__init__(env)
-        self.nzones = self.metadata['nzones']
-        self.nresources = self.metadata['nresources']
-        ac_space_low = np.zeros(env.action_space.shape)
-        ac_space_high = env.action_space.high / self.nresources
-        assert np.all(
-            ac_space_high <= 1), 'Invalid action space. Individual capacities must be less than or equal the global capacity'
-        assert np.sum(
-            ac_space_high) > 1, 'Invalid action space. Sum of individual capacities must be greater than global capacity'
-        self.action_space = gym.spaces.Box(
-            low=ac_space_low, high=ac_space_high, dtype=np.float32)
-        logger.log('ac space high: {0}'.format(self.action_space.high))
+        self.env = env
+        self.nresources = self.env.metadata['nresources']
 
-    def reset(self):
-        self.obs = self.env.reset()
-        return self.obs
+    def round_action(self, action):
+        action = self.get_allocation(action) / self.nresources
+        return action
 
-    def step(self, action):
-        # action = [1 / self.nzones] * self.nzones
+    def get_allocation(self, action):
         if not isinstance(action, np.ndarray):
             action = np.array(action)
         if abs(sum(action) - 1) > 1e-6:
@@ -311,7 +301,51 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
             deficit_per_zone[target_zone] -= increase
             deficit -= increase
             # print('deficit: {0}'.format(deficit))
-        # allocation = self.obs[0:self.nzones]
+        return allocation
+
+
+class MMDPActionRounderWrapper(gym.Wrapper):
+    """Must wrap MMDPActionSpaceNormalizerWrapper. i.e. assumes action space to be normalized"""
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.action_rounder = MMDPActionRounder(env)
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        rounded_action = self.action_rounder.round_action(action)
+        return self.env.step(rounded_action)
+
+
+class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.nzones = self.metadata['nzones']
+        self.nresources = self.metadata['nresources']
+        ac_space_low = np.zeros(env.action_space.shape)
+        ac_space_high = env.action_space.high / self.nresources
+        assert np.all(
+            ac_space_high <= 1), 'Invalid action space. Individual capacities must be less than or equal the global capacity'
+        assert np.sum(
+            ac_space_high) > 1, 'Invalid action space. Sum of individual capacities must be greater than global capacity'
+        self.action_space = gym.spaces.Box(
+            low=ac_space_low, high=ac_space_high, dtype=np.float32)
+        logger.log('ac space high: {0}'.format(self.action_space.high))
+
+    def reset(self):
+        self.obs = self.env.reset()
+        return self.obs
+
+    def step(self, action):
+        # action = [1 / self.nzones] * self.nzones
+        allocation_fraction = action * self.nresources
+        allocation = np.round(allocation_fraction)
+        if np.sum(allocation) != self.nresources:
+            raise error.InvalidAction(
+                "Invalid action. The action, when rounded, should sum to nresources. Provided action was {0}".format(allocation))
         logger.log("action: {0}".format(allocation), level=logger.DEBUG)
         self.obs, r, d, info = self.env.step(allocation)
         return self.obs, r, d, info
