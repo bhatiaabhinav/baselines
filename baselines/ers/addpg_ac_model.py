@@ -10,6 +10,7 @@ from baselines.ers.utils import (tf_deep_net, tf_log_transform_adaptive,
                                  tf_safe_softmax_with_non_uniform_individual_constraints,
                                  tf_scale)
 
+
 class RunningStats:
 
     def __init__(self, session: tf.Session, shape, epsilon=1e-2):
@@ -21,13 +22,16 @@ class RunningStats:
         self.session = session
         self.shape = shape
         self.epsilon = epsilon
-        self.mean = tf.get_variable(dtype=tf.float32, shape=shape, initializer=tf.constant_initializer(0.0), name="running_mean", trainable=False)
-        self.std = tf.get_variable(dtype=tf.float32, shape=shape, initializer=tf.constant_initializer(epsilon), name="running_std", trainable=False)
-            
+        self.mean = tf.get_variable(dtype=tf.float32, shape=shape, initializer=tf.constant_initializer(
+            0.0), name="running_mean", trainable=False)
+        self.std = tf.get_variable(dtype=tf.float32, shape=shape, initializer=tf.constant_initializer(
+            epsilon), name="running_std", trainable=False)
 
     def setup_update(self):
-        self._mean_placeholder = tf.placeholder(dtype=tf.float32, shape=self.shape, name="running_mean_placeholder")
-        self._std_placeholder = tf.placeholder(dtype=tf.float32, shape=self.shape, name="running_std_placeholer")
+        self._mean_placeholder = tf.placeholder(
+            dtype=tf.float32, shape=self.shape, name="running_mean_placeholder")
+        self._std_placeholder = tf.placeholder(
+            dtype=tf.float32, shape=self.shape, name="running_std_placeholer")
         self._set_mean = tf.assign(self.mean, self._mean_placeholder)
         self._set_std = tf.assign(self.std, self._std_placeholder)
 
@@ -45,14 +49,16 @@ class RunningStats:
             self.old_s = self.new_s
 
         mean = self.new_m if self.n else np.zeros(shape=self.shape)
-        variance = self.new_s / (self.n - 1) if self.n > 1 else np.zeros(shape=self.shape)
+        variance = self.new_s / \
+            (self.n - 1) if self.n > 1 else np.zeros(shape=self.shape)
         variance = np.maximum(variance, self.epsilon)
-        std =  np.sqrt(variance)
+        std = np.sqrt(variance)
 
         self.session.run([self._set_mean, self._set_std], feed_dict={
             self._mean_placeholder: mean,
             self._std_placeholder: std
         })
+
 
 class DDPG_Model_Base:
     def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
@@ -118,14 +124,15 @@ class DDPG_Model_Base:
                 states_feed_demand = states[:, :-zones - 1]
                 states_feed_alloc = states[:, -zones - 1:-1]
                 states_feed_time = states[:, -1:]
-                states_feed_demand = (states_feed_demand - self._ob_stats.mean[:-zones-1])/self._ob_stats.std[:-zones-1]
+                states_feed_demand = (
+                    states_feed_demand - self._ob_stats.mean[:-zones - 1]) / self._ob_stats.std[:-zones - 1]
                 # states_feed_demand = tf.layers.batch_normalization(states_feed_demand, training=is_training, name='batch_norm')
                 # states_feed_demand = tf_log_transform_adaptive(
                 #     states_feed_demand, 'log_transform_demand', uniform_gamma=True)
                 states_feed_alloc = tf_log_transform_adaptive(
                     states_feed_alloc, 'log_transform_alloc', uniform_gamma=True)
-                states_feed_alloc = 2*states_feed_alloc-1
-                states_feed_time = 2*states_feed_time-1
+                states_feed_alloc = 2 * states_feed_alloc - 1
+                states_feed_time = 2 * states_feed_time - 1
                 states = tf.concat(
                     [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
                 # states = tf_scale(states, 0, 1, -1, 1, 'scale_minus_1_to_1')
@@ -476,9 +483,10 @@ class DDPG_Model_Target(DDPG_Model_Base):
                 self._update_network_op.append(hard_update_op)
                 # if from_var not in from_vars_trainable:
                 #     soft_update_op = hard_update_op
-                if 'running_ob_stats' in from_var.name:
+                if 'running_ob_stats' in from_var.name or 'normalized_states' in from_var.name:
                     soft_update_op = hard_update_op
-                    logger.log('Variable {0} will be hard updated to target network'.format(from_var.name))
+                    logger.log(
+                        'Variable {0} will be hard updated to target network'.format(from_var.name))
                 self._soft_update_network_op.append(soft_update_op)
 
     def soft_update_from_main_network(self):
@@ -495,9 +503,11 @@ class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
         self.main_network = main_network
         self.target_divergence = target_divergence
         self._main_network_params = self.main_network._get_tf_variables()
-        self._main_network_actor_params = list(filter(lambda p: 'critic' not in p.name, self._main_network_params))
+        self._main_network_actor_params = list(
+            filter(lambda p: 'critic' not in p.name, self._main_network_params))
         self._main_network_params_perturbable = self.main_network._get_tf_perturbable_variables()
-        self._main_network_actor_params_perturbable = list(filter(lambda p: 'critic' not in p.name, self._main_network_params_perturbable))
+        self._main_network_actor_params_perturbable = list(
+            filter(lambda p: 'critic' not in p.name, self._main_network_params_perturbable))
         with tf.variable_scope(name):
             self._setup_states_feed()
             self._setup_running_ob_stats()

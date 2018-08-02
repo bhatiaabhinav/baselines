@@ -35,7 +35,7 @@ def normalize(a, epsilon=1e-6):
 
 
 def scale(a, low, high, target_low, target_high):
-    a_frac = (a - low)/(high - low)
+    a_frac = (a - low) / (high - low)
     a = target_low + a_frac * (target_high - target_low)
     return a
 
