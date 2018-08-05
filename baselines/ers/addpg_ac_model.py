@@ -117,7 +117,7 @@ class DDPG_Model_Base:
 
     def _tf_normalize_states(self, states, scope, is_training):
         with tf.variable_scope(scope):
-            if self.log_transform_inputs:
+            if self.log_transform_inputs and False:
                 states = tf_scale(states, self.ob_low,
                                   self.ob_high, 0, 1, 'scale_0_to_1')
                 zones = self.ac_shape[0]
