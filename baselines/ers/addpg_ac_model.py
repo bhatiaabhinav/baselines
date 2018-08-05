@@ -130,7 +130,7 @@ class DDPG_Model_Base:
                 # states_feed_demand = tf_log_transform_adaptive(
                 #     states_feed_demand, 'log_transform_demand', uniform_gamma=True)
                 states_feed_alloc = tf_log_transform_adaptive(
-                    states_feed_alloc, 'log_transform_alloc', uniform_gamma=True)
+                    states_feed_alloc, 'log_transform_alloc', uniform_gamma=False)
                 states_feed_alloc = 2 * states_feed_alloc - 1
                 states_feed_time = 2 * states_feed_time - 1
                 states = tf.concat(
@@ -148,7 +148,7 @@ class DDPG_Model_Base:
                 actions = tf_scale(actions, self.ac_low,
                                    self.ac_high, 0, 1, 'scale_0_to_1')
                 actions = tf_log_transform_adaptive(
-                    actions, scope='log_transform', uniform_gamma=True)
+                    actions, scope='log_transform', uniform_gamma=False)
                 actions = tf_scale(actions, 0, 1, -1, 1, 'scale_minus_1_to_1')
             else:
                 # actions = tf.layers.batch_normalization(
