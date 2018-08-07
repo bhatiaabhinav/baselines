@@ -7,6 +7,7 @@ from gym.spaces import Box
 
 from baselines import logger
 from baselines.ers.utils import (tf_deep_net, tf_log_transform_adaptive,
+                                 tf_normalize,
                                  tf_safe_softmax_with_non_uniform_individual_constraints,
                                  tf_scale)
 
@@ -61,10 +62,13 @@ class RunningStats:
 
 
 class DDPG_Model_Base:
-    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
+    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor,
+                 soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm,
+                 use_norm_actor, log_norm_obs_alloc, log_norm_action, rms_norm_action, **kwargs):
         assert len(
             ac_space.shape) == 1, "Right now only flat action spaces are supported"
-        assert (not softmax_actor) or (not soft_constraints), "Cannot use both soft and hard constraints"
+        assert (not softmax_actor) or (
+            not soft_constraints), "Cannot use both soft and hard constraints"
         self.session = session
         self.name = name
         self.ac_shape = ac_space.shape
@@ -79,10 +83,9 @@ class DDPG_Model_Base:
         self.use_batch_norm = use_batch_norm
         self.use_layer_norm = use_layer_norm
         self.use_norm_actor = use_norm_actor
-        self.log_transform_inputs = log_transform_inputs
-        # self.log_transform_action_feed = log_transform_action_feed
-        # self.log_transform_max_x = log_transform_max_x
-        # self.log_transform_t = log_transform_t
+        self.log_norm_obs_alloc = log_norm_obs_alloc
+        self.log_norm_action = log_norm_action
+        self.rms_norm_action = rms_norm_action
         self.softmax_actor = softmax_actor
         self.soft_constraints = soft_constraints
         self.advantage_learning = advantage_learning
@@ -100,6 +103,49 @@ class DDPG_Model_Base:
         with tf.variable_scope('model/running_ac_stats'):
             self._ac_stats = RunningStats(self.session, self.ac_shape)
 
+    def _tf_normalize_states(self, states, scope, is_training):
+        with tf.variable_scope(scope):
+            if self.log_norm_obs_alloc:
+                logger.log(
+                    'Using log normalization for allocation part of observation. rms_norm for rest of it.')
+                states = tf_scale(states, self.ob_low,
+                                  self.ob_high, 0, 1, 'scale_0_to_1_states')
+                zones = self.ac_shape[0]
+                states_feed_demand = states[:, :-zones - 1]
+                states_feed_alloc = states[:, -zones - 1:-1]
+                states_feed_time = states[:, -1:]
+                states_feed_demand = tf_normalize(
+                    states_feed_demand, self._ob_stats.mean[:-zones - 1], self._ob_stats.std[:-zones - 1], 'rms_norm_demand')
+                states_feed_alloc = tf_log_transform_adaptive(
+                    states_feed_alloc, 'log_norm_alloc', uniform_gamma=True)
+                states_feed_alloc = tf_scale(
+                    states_feed_alloc, 0, 1, -1, 1, 'scale_minus_1_to_1_alloc')
+                states_feed_time = tf_normalize(
+                    states_feed_time, self._ob_stats.mean[-1:], self._ob_stats.std[-1:], 'rms_norm_time')
+                states = tf.concat(
+                    [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
+            else:
+                logger.log('Using rms_norm for observation normalization')
+                states = tf_normalize(
+                    states, self._ob_stats.mean, self._ob_stats.std, 'rms_norm_states')
+            return states
+
+    def _tf_normalized_actions(self, actions, scope, is_training):
+        with tf.variable_scope(scope):
+            if self.log_norm_action:
+                actions = tf_scale(actions, self.ac_low,
+                                   self.ac_high, 0, 1, 'scale_0_to_1_actions')
+                actions = tf_log_transform_adaptive(
+                    actions, scope='log_norm_actions', uniform_gamma=True)
+                actions = tf_scale(actions, 0, 1, -1, 1,
+                                   'scale_minus_1_to_1_actions')
+            elif self.rms_norm_action:
+                actions = tf_normalize(
+                    actions, self._ac_stats.mean, self._ac_stats.std, 'rms_norm')
+            else:
+                '''do not transform actions'''
+            return actions
+
     def _setup_actor(self):
         with tf.variable_scope('model/actor'):
             self._is_training_a = tf.placeholder(
@@ -109,11 +155,15 @@ class DDPG_Model_Base:
             a = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'a_network', self.nn_size, use_ln=self.use_layer_norm and self.use_norm_actor,
                             use_bn=self.use_batch_norm and self.use_norm_actor, training=self._is_training_a, output_shape=self.ac_shape)
             if self.softmax_actor:
+                logger.log('Actor output using contrained softmax layer')
                 a = tf_safe_softmax_with_non_uniform_individual_constraints(
                     a, self.ac_high, 'constrained_softmax')
             elif self.soft_constraints:
-                a = tf.minimum(tf.maximum((tf.nn.tanh(a, 'tanh') + 1) / 2, 0), 1)
+                logger.log('Actor output in range 0 to 1 using scaled tanh')
+                a = tf.minimum(tf.maximum(
+                    (tf.nn.tanh(a, 'tanh') + 1) / 2, 0), 1)
             else:
+                logger.log('Actor output in range -1 to 1 using tanh')
                 a = tf.nn.tanh(a, 'tanh')
             self._use_actions_feed = tf.placeholder(
                 dtype=tf.bool, name='use_actions_feed')
@@ -122,48 +172,6 @@ class DDPG_Model_Base:
             self._a = tf.case([
                 (self._use_actions_feed, lambda: self._actions_feed)
             ], default=lambda: a)
-
-    def _tf_normalize_states(self, states, scope, is_training):
-        with tf.variable_scope(scope):
-            if self.log_transform_inputs:
-                states = tf_scale(states, self.ob_low,
-                                  self.ob_high, 0, 1, 'scale_0_to_1')
-                zones = self.ac_shape[0]
-                states_feed_demand = states[:, :-zones - 1]
-                states_feed_alloc = states[:, -zones - 1:-1]
-                states_feed_time = states[:, -1:]
-                states_feed_demand = (
-                    states_feed_demand - self._ob_stats.mean[:-zones - 1]) / self._ob_stats.std[:-zones - 1]
-                # states_feed_demand = tf.layers.batch_normalization(states_feed_demand, training=is_training, name='batch_norm')
-                # states_feed_demand = tf_log_transform_adaptive(
-                #     states_feed_demand, 'log_transform_demand', uniform_gamma=True)
-                states_feed_alloc = tf_log_transform_adaptive(
-                    states_feed_alloc, 'log_transform_alloc', uniform_gamma=True)
-                states_feed_alloc = 2 * states_feed_alloc - 1
-                states_feed_time = 2 * states_feed_time - 1
-                states = tf.concat(
-                    [states_feed_demand, states_feed_alloc, states_feed_time], axis=-1, name='states_concat')
-                # states = tf_scale(states, 0, 1, -1, 1, 'scale_minus_1_to_1')
-            else:
-                # states = tf.layers.batch_normalization(
-                #     states, training=is_training, name='batch_norm')
-                states = (states - self._ob_stats.mean) / self._ob_stats.std
-            return states
-
-    def _tf_normalized_actions(self, actions, scope, is_training):
-        with tf.variable_scope(scope):
-            if self.log_transform_inputs:
-                actions = tf_scale(actions, self.ac_low,
-                                   self.ac_high, 0, 1, 'scale_0_to_1')
-                actions = tf_log_transform_adaptive(
-                    actions, scope='log_transform', uniform_gamma=True)
-                actions = tf_scale(actions, 0, 1, -1, 1, 'scale_minus_1_to_1')
-            else:
-                actions = (actions - self._ac_stats.mean) / self._ac_stats.std
-                # actions = tf.layers.batch_normalization(
-                #     actions, training=is_training, name='batch_norm')
-                ...
-            return actions
 
     def _setup_critic(self):
         with tf.variable_scope('model/critic'):
@@ -196,7 +204,7 @@ class DDPG_Model_Base:
         return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/model/{1}'.format(self.name, extra_scope))
 
     def _get_tf_perturbable_variables(self, extra_scope=''):
-        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_transform' in var.name or 'running_ob_stats' in var.name or 'running_ac_stats' in var.name)]
+        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_norm' in var.name or 'running_ob_stats' in var.name or 'running_ac_stats' in var.name)]
 
     def _get_update_ops(self, extra_scope=''):
         return tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/model/{1}'.format(self.name, extra_scope))
@@ -265,12 +273,15 @@ class DDPG_Model_Base:
 
 
 class DDPG_Model_Main(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, soft_constraints, nn_size,
-                 lr, a_lr, init_scale, advantage_learning, use_layer_norm,
-                 use_batch_norm, use_norm_actor, l2_reg, a_l2_reg, clip_norm,
-                 a_clip_norm, log_transform_inputs, **kwargs):
-        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
-                         use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
+    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor,
+                 soft_constraints, soft_constraints_lambda, nn_size, lr, a_lr, init_scale, advantage_learning,
+                 use_layer_norm, use_batch_norm, use_norm_actor, l2_reg, a_l2_reg, clip_norm,
+                 a_clip_norm, log_norm_obs_alloc, log_norm_action, rms_norm_action, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor,
+                         soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale,
+                         advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
+                         use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor,
+                         log_norm_obs_alloc=log_norm_obs_alloc, log_norm_action=log_norm_action, rms_norm_action=rms_norm_action)
         with tf.variable_scope(name):
             self._setup_states_feed()
             self._setup_running_ob_stats()
@@ -279,8 +290,8 @@ class DDPG_Model_Main(DDPG_Model_Base):
             self._setup_running_ac_stats_update()
             self._setup_actor()
             self._setup_critic()
-            self._setup_training(
-                a_lr=a_lr, a_l2_reg=a_l2_reg, a_clip_norm=a_clip_norm, lr=lr, l2_reg=l2_reg, clip_norm=clip_norm)
+            self._setup_training(a_lr=a_lr, a_l2_reg=a_l2_reg, a_clip_norm=a_clip_norm,
+                                 lr=lr, l2_reg=l2_reg, clip_norm=clip_norm, soft_constraints_lambda=soft_constraints_lambda)
             self._setup_saving_loading_ops()
 
     def _setup_running_ob_stats_update(self):
@@ -291,7 +302,7 @@ class DDPG_Model_Main(DDPG_Model_Base):
         with tf.variable_scope('update_running_ac_stats'):
             self._ac_stats.setup_update()
 
-    def _setup_actor_training(self, a_l2_reg, a_clip_norm):
+    def _setup_actor_training(self, a_l2_reg, a_clip_norm, soft_constraints_lambda):
         with tf.variable_scope('optimize_actor'):
             # for training actions: maximize Advantage i.e. A
             self._a_vars = self._get_tf_trainable_variables('actor')
@@ -300,9 +311,17 @@ class DDPG_Model_Main(DDPG_Model_Base):
             with tf.name_scope('infeasibility'):
                 sum_violation = tf.reduce_sum(self._a, axis=-1) - 1
                 capacity_violation = tf.maximum(0.0, self._a - self.ac_high)
-                self._infeasibility += tf.reduce_mean(tf.square(sum_violation), name='global_infeasibility')
-                self._infeasibility += tf.reduce_mean(capacity_violation, name='capacity_infeasibility')
-            loss = -self._av_A + int(self.soft_constraints) * 10000 * self._infeasibility
+                self._infeasibility += tf.reduce_mean(
+                    tf.square(sum_violation), name='global_infeasibility')
+                self._infeasibility += tf.reduce_mean(
+                    capacity_violation, name='capacity_infeasibility')
+            if self.soft_constraints:
+                logger.log('Adding infeasibility penalty with lambda {0}'.format(
+                    soft_constraints_lambda))
+                loss = -self._av_A + int(self.soft_constraints) * \
+                    soft_constraints_lambda * self._infeasibility
+            else:
+                loss = -self._av_A
             if a_l2_reg > 0:
                 with tf.name_scope('L2_Losses'):
                     l2_loss = 0
@@ -387,7 +406,7 @@ class DDPG_Model_Main(DDPG_Model_Base):
                     list(zip(A_grads, self._A_vars)))
                 # self.train_A_op = optimizer_q.minimize(self.A_mse, var_list=self.A_vars)
 
-    def _setup_training(self, a_lr, a_l2_reg, a_clip_norm, lr, l2_reg, clip_norm):
+    def _setup_training(self, a_lr, a_l2_reg, a_clip_norm, lr, l2_reg, clip_norm, soft_constraints_lambda):
         with tf.variable_scope('training'):
             with tf.variable_scope('optimizers'):
                 self._optimizer_A = tf.train.AdamOptimizer(
@@ -398,7 +417,8 @@ class DDPG_Model_Main(DDPG_Model_Base):
                     learning_rate=a_lr, name='actor_adam')
                 self._optimizer_a_supervised = tf.train.AdamOptimizer(
                     learning_rate=a_lr, name='actor_supervised_adam')
-            self._setup_actor_training(a_l2_reg, a_clip_norm)
+            self._setup_actor_training(
+                a_l2_reg, a_clip_norm, soft_constraints_lambda)
             self._setup_critic_training(l2_reg, clip_norm)
 
     def _setup_saving_loading_ops(self):
@@ -476,9 +496,15 @@ class DDPG_Model_Main(DDPG_Model_Base):
 
 
 class DDPG_Model_Target(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_space, ac_space, softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, tau, log_transform_inputs, **kwargs):
-        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
-                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_space, ac_space,
+                 softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning,
+                 use_layer_norm, use_batch_norm, use_norm_actor, tau,
+                 log_norm_obs_alloc, log_norm_action, rms_norm_action, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space,
+                         softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size,
+                         init_scale=init_scale, advantage_learning=advantage_learning,
+                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor,
+                         log_norm_obs_alloc=log_norm_obs_alloc, log_norm_action=log_norm_action, rms_norm_action=rms_norm_action)
         self.main_network = main_network
         self.tau = tau
         with tf.variable_scope(name):
@@ -522,9 +548,15 @@ class DDPG_Model_Target(DDPG_Model_Base):
 
 
 class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_space, ac_space, softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
-        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
-                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_space, ac_space,
+                 softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning,
+                 use_layer_norm, use_batch_norm, use_norm_actor,
+                 log_norm_obs_alloc, log_norm_action, rms_norm_action, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space,
+                         softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size,
+                         init_scale=init_scale, advantage_learning=advantage_learning,
+                         use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor,
+                         log_norm_obs_alloc=log_norm_obs_alloc, log_norm_action=log_norm_action, rms_norm_action=rms_norm_action)
         self.main_network = main_network
         self.target_divergence = target_divergence
         self._main_network_params = self.main_network._get_tf_variables()

@@ -75,8 +75,10 @@ def parse():
     parser.add_argument('--reward_scaling', type=float, default=1)
     parser.add_argument('--softmax_actor', type=str2bool, default=False)
     parser.add_argument('--soft_constraints', type=str2bool, default=False)
-    parser.add_argument('--log_transform_inputs',
-                        type=str2bool, default=False)
+    parser.add_argument('--soft_constraints_lambda', type=float, default=10000)
+    parser.add_argument('--log_norm_obs_alloc', type=str2bool, default=False)
+    parser.add_argument('--log_norm_action', type=str2bool, default=False)
+    parser.add_argument('--rms_norm_action', type=str2bool, default=False)
     parser.add_argument('--exploration_episodes', type=int, default=10)
     parser.add_argument('--exploration_sigma', type=float, default=None)
     parser.add_argument('--exploration_theta', type=float, default=1)
@@ -105,7 +107,8 @@ def parse():
     parser.add_argument('--analysis_mode', type=str2bool, default=False)
     parser.add_argument('--test_episodes', type=int, default=100)
     parser.add_argument('--test_seed', type=int, default=42)
-    parser.add_argument('--wolpertinger_critic_train', type=str2bool, default=False)
+    parser.add_argument('--wolpertinger_critic_train',
+                        type=str2bool, default=False)
     parser.add_argument('--print_precision', type=int, default=2)
     parser.add_argument('--logger_level', type=str2level, default='INFO')
     parser.add_argument('--monitor', type=str2bool, default=False)

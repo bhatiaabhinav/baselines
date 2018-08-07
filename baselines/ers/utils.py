@@ -87,6 +87,11 @@ def tf_log_transform_adaptive(inputs, scope, max_inputs=1, uniform_gamma=False, 
         return log_transform
 
 
+def tf_normalize(inputs, mean, std, scope):
+    with tf.variable_scope(scope):
+        return (inputs - mean) / std
+
+
 def tf_safe_softmax(inputs, scope):
     with tf.variable_scope(scope):
         x = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
