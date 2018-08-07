@@ -286,6 +286,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
             if learning:
                 experience_buffer.add(Experience(obs, a, r, d, _, obs_))
                 model.main.update_running_ob_stats(obs)
+                model.main.update_running_ac_stats(a)
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
             if 'blip_reward' in _:
                 blip_R += _['blip_reward']

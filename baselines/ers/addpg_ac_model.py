@@ -96,6 +96,10 @@ class DDPG_Model_Base:
         with tf.variable_scope('model/running_ob_stats'):
             self._ob_stats = RunningStats(self.session, self.ob_shape)
 
+    def _setup_running_ac_stats(self):
+        with tf.variable_scope('model/running_ac_stats'):
+            self._ac_stats = RunningStats(self.session, self.ac_shape)
+
     def _setup_actor(self):
         with tf.variable_scope('model/actor'):
             self._is_training_a = tf.placeholder(
@@ -155,6 +159,7 @@ class DDPG_Model_Base:
                     actions, scope='log_transform', uniform_gamma=True)
                 actions = tf_scale(actions, 0, 1, -1, 1, 'scale_minus_1_to_1')
             else:
+                actions = (actions - self._ac_stats.mean) / self._ac_stats.std
                 # actions = tf.layers.batch_normalization(
                 #     actions, training=is_training, name='batch_norm')
                 ...
@@ -191,7 +196,7 @@ class DDPG_Model_Base:
         return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, '{0}/model/{1}'.format(self.name, extra_scope))
 
     def _get_tf_perturbable_variables(self, extra_scope=''):
-        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_transform' in var.name or 'running_ob_stats' in var.name)]
+        return [var for var in self._get_tf_variables(extra_scope) if not('LayerNorm' in var.name or 'batch_norm' in var.name or 'log_transform' in var.name or 'running_ob_stats' in var.name or 'running_ac_stats' in var.name)]
 
     def _get_update_ops(self, extra_scope=''):
         return tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='{0}/model/{1}'.format(self.name, extra_scope))
@@ -270,6 +275,8 @@ class DDPG_Model_Main(DDPG_Model_Base):
             self._setup_states_feed()
             self._setup_running_ob_stats()
             self._setup_running_ob_stats_update()
+            self._setup_running_ac_stats()
+            self._setup_running_ac_stats_update()
             self._setup_actor()
             self._setup_critic()
             self._setup_training(
@@ -279,6 +286,10 @@ class DDPG_Model_Main(DDPG_Model_Base):
     def _setup_running_ob_stats_update(self):
         with tf.variable_scope('update_running_ob_stats'):
             self._ob_stats.setup_update()
+
+    def _setup_running_ac_stats_update(self):
+        with tf.variable_scope('update_running_ac_stats'):
+            self._ac_stats.setup_update()
 
     def _setup_actor_training(self, a_l2_reg, a_clip_norm):
         with tf.variable_scope('optimize_actor'):
@@ -405,6 +416,9 @@ class DDPG_Model_Main(DDPG_Model_Base):
     def update_running_ob_stats(self, obs):
         self._ob_stats.update(obs)
 
+    def update_running_ac_stats(self, action):
+        self._ac_stats.update(action)
+
     def train_V(self, states, target_V):
         return self.session.run([self._train_V_op, self._V_mse], feed_dict={
             self._states_feed: states,
@@ -470,6 +484,7 @@ class DDPG_Model_Target(DDPG_Model_Base):
         with tf.variable_scope(name):
             self._setup_states_feed()
             self._setup_running_ob_stats()
+            self._setup_running_ac_stats()
             self._setup_actor()
             self._setup_critic()
             self._setup_update_from_main_network()
@@ -521,6 +536,7 @@ class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
         with tf.variable_scope(name):
             self._setup_states_feed()
             self._setup_running_ob_stats()
+            self._setup_running_ac_stats()
             self._setup_actor()
             # dont setup critic for this one
             self._setup_update_from_main_network()
