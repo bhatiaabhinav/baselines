@@ -8,7 +8,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--soft_constraints=False \
 	--soft_constraints_lambda=10000 \
 	--softmax_actor=True \
-	--wolpertinger_critic_train=False \
+	--wolpertinger_critic_train=True \
 	--log_norm_obs_alloc=True \
 	--log_norm_action=True \
 	--rms_norm_action=False \
@@ -29,4 +29,4 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--logger_level=INFO \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=$2
+	--run_no_prefix=cddpg_logboth_wolpert
