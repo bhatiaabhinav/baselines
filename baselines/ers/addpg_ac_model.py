@@ -61,9 +61,10 @@ class RunningStats:
 
 
 class DDPG_Model_Base:
-    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
+    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
         assert len(
             ac_space.shape) == 1, "Right now only flat action spaces are supported"
+        assert (not softmax_actor) or (not soft_constraints), "Cannot use both soft and hard constraints"
         self.session = session
         self.name = name
         self.ac_shape = ac_space.shape
@@ -83,6 +84,7 @@ class DDPG_Model_Base:
         # self.log_transform_max_x = log_transform_max_x
         # self.log_transform_t = log_transform_t
         self.softmax_actor = softmax_actor
+        self.soft_constraints = soft_constraints
         self.advantage_learning = advantage_learning
         self.DUMMY_ACTION = [np.zeros(self.ac_shape)]
 
@@ -105,6 +107,8 @@ class DDPG_Model_Base:
             if self.softmax_actor:
                 a = tf_safe_softmax_with_non_uniform_individual_constraints(
                     a, self.ac_high, 'constrained_softmax')
+            elif self.soft_constraints:
+                a = tf.minimum(tf.maximum((tf.nn.tanh(a, 'tanh') + 1) / 2, 0), 1)
             else:
                 a = tf.nn.tanh(a, 'tanh')
             self._use_actions_feed = tf.placeholder(
@@ -256,11 +260,11 @@ class DDPG_Model_Base:
 
 
 class DDPG_Model_Main(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, nn_size,
+    def __init__(self, session: tf.Session, name, ob_space: Box, ac_space: Box, softmax_actor, soft_constraints, nn_size,
                  lr, a_lr, init_scale, advantage_learning, use_layer_norm,
                  use_batch_norm, use_norm_actor, l2_reg, a_l2_reg, clip_norm,
                  a_clip_norm, log_transform_inputs, **kwargs):
-        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning, use_layer_norm=use_layer_norm,
                          use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         with tf.variable_scope(name):
             self._setup_states_feed()
@@ -281,7 +285,13 @@ class DDPG_Model_Main(DDPG_Model_Base):
             # for training actions: maximize Advantage i.e. A
             self._a_vars = self._get_tf_trainable_variables('actor')
             self._av_A = tf.reduce_mean(self._A)
-            loss = -self._av_A
+            self._infeasibility = 0
+            with tf.name_scope('infeasibility'):
+                sum_violation = tf.reduce_sum(self._a, axis=-1) - 1
+                capacity_violation = tf.maximum(0.0, self._a - self.ac_high)
+                self._infeasibility += tf.reduce_mean(tf.square(sum_violation), name='global_infeasibility')
+                self._infeasibility += tf.reduce_mean(capacity_violation, name='capacity_infeasibility')
+            loss = -self._av_A + int(self.soft_constraints) * 10000 * self._infeasibility
             if a_l2_reg > 0:
                 with tf.name_scope('L2_Losses'):
                     l2_loss = 0
@@ -419,7 +429,7 @@ class DDPG_Model_Main(DDPG_Model_Base):
         return self.train_A(states, target_Q, actions=actions)
 
     def train_a(self, states):
-        return self.session.run([self._train_a_op, self._av_A], feed_dict={
+        return self.session.run([self._train_a_op, self._av_A, self._infeasibility], feed_dict={
             self._states_feed: states,
             self._use_actions_feed: False,
             self._actions_feed: self.DUMMY_ACTION,
@@ -452,8 +462,8 @@ class DDPG_Model_Main(DDPG_Model_Base):
 
 
 class DDPG_Model_Target(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_space, ac_space, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, tau, log_transform_inputs, **kwargs):
-        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, ob_space, ac_space, softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, tau, log_transform_inputs, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
                          use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         self.main_network = main_network
         self.tau = tau
@@ -497,8 +507,8 @@ class DDPG_Model_Target(DDPG_Model_Base):
 
 
 class DDPG_Model_With_Param_Noise(DDPG_Model_Base):
-    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_space, ac_space, softmax_actor, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
-        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
+    def __init__(self, session: tf.Session, name, main_network: DDPG_Model_Main, target_divergence, ob_space, ac_space, softmax_actor, soft_constraints, nn_size, init_scale, advantage_learning, use_layer_norm, use_batch_norm, use_norm_actor, log_transform_inputs, **kwargs):
+        super().__init__(session=session, name=name, ob_space=ob_space, ac_space=ac_space, softmax_actor=softmax_actor, soft_constraints=soft_constraints, nn_size=nn_size, init_scale=init_scale, advantage_learning=advantage_learning,
                          use_layer_norm=use_layer_norm, use_batch_norm=use_batch_norm, use_norm_actor=use_norm_actor, log_transform_inputs=log_transform_inputs)
         self.main_network = main_network
         self.target_divergence = target_divergence

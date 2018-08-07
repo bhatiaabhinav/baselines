@@ -111,18 +111,18 @@ def tf_safe_softmax_with_uniform_individual_constraints(inputs, max_output, scop
         return (exp + epsilon / dimensions) / (sigma + epsilon)
 
 
-def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, contraints, scope):
+def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, constraints, scope):
     with tf.variable_scope(scope):
         inputs_shape = inputs.shape.as_list()[1:]
         dimensions = reduce(mul, inputs_shape, 1)
-        contraints = np.asarray(contraints)
-        if list(contraints.shape) != inputs_shape:
+        constraints = np.asarray(constraints)
+        if list(constraints.shape) != inputs_shape:
             raise ValueError('shape of constraints {0} was not compatible with shape of inputs {1}'.format(
-                contraints.shape, inputs_shape))
-        if np.any(contraints < 0) or np.any(contraints > 1):
+                constraints.shape, inputs_shape))
+        if np.any(constraints < 0) or np.any(constraints > 1):
             raise ValueError(
-                "contraints needs to be in range [0, 1]")
-        if np.sum(contraints) <= 1:
+                "constraints needs to be in range [0, 1]")
+        if np.sum(constraints) <= 1:
             raise ValueError("sum of constrains need to be greater than 1")
 
         # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
@@ -133,16 +133,16 @@ def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, contraints, 
         '''
         for some epsilons vector,
         our output z needs to be (exp + epsilons)/(sigma + sum(epsilons))
-        to satisfy the contraints, we get the following set of linear equations:
+        to satisfy the constraints, we get the following set of linear equations:
         for all i:
             (constraints[i] - 1) * epsilons[i] + constraints[i] * sum(epsilons[except i]) = 1 - constraints[i]
         '''
-        contraints_flat = contraints.flatten()
+        constraints_flat = constraints.flatten()
         # to solve the epsilons linear equation:
         # coefficient matrix:
-        coeffs = np.array([[(contraints_flat[row] - 1 if col == row else contraints_flat[row])
+        coeffs = np.array([[(constraints_flat[row] - 1 if col == row else constraints_flat[row])
                             for col in range(dimensions)] for row in range(dimensions)])
-        constants = np.array([1 - contraints_flat[row]
+        constants = np.array([1 - constraints_flat[row]
                               for row in range(dimensions)])
         epsilons_flat = np.linalg.solve(coeffs, constants)
         epsilons = np.reshape(epsilons_flat, inputs_shape)

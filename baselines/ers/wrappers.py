@@ -1,9 +1,11 @@
 from collections import deque
+from functools import reduce
+from operator import mul
 
 import gym
 import numpy as np
-
 from gym import error
+
 from baselines import logger
 
 
@@ -258,6 +260,61 @@ class MMDPObsStackWrapper(gym.Wrapper):
         self.obs, r, d, info = self.env.step(action)
         self.last_k_demands.append(self.obs[0:self.nzones])
         return self._observation(), r, d, info
+
+
+class MMDPInfeasibleActionHandlerWrapper(gym.Wrapper):
+    """
+    This should be used when constraints are not handled by the actor network.
+    Transforms an infeasible action to a feasible action.
+    It should wrap action rounder wrapper/action normalizer wrapper.
+    """
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.ac_space = self.action_space  # type: gym.spaces.Box
+        self.ac_shape = list(self.ac_space.shape)
+        self.calculate_epsilons(self.ac_space.high)
+
+    def calculate_epsilons(self, constraints: np.ndarray):
+        '''
+        for some epsilons vector,
+        our output z needs to be (exp + epsilons)/(sigma + sum(epsilons))
+        to satisfy the constraints, we get the following set of linear equations:
+        for all i:
+            (constraints[i] - 1) * epsilons[i] + constraints[i] * sum(epsilons[except i]) = 1 - constraints[i]
+        '''
+        if np.any(constraints < 0) or np.any(constraints > 1):
+            raise ValueError(
+                "constraints needs to be in range [0, 1]")
+        if np.sum(constraints) <= 1:
+            raise ValueError("sum of constrains need to be greater than 1")
+
+        dimensions = reduce(mul, self.ac_shape, 1)
+        constraints = np.asarray(constraints)
+        constraints_flat = constraints.flatten()
+        # to solve the epsilons linear equation:
+        # coefficient matrix:
+        coeffs = np.array([[(constraints_flat[row] - 1 if col == row else constraints_flat[row])
+                            for col in range(dimensions)] for row in range(dimensions)])
+        constants = np.array([1 - constraints_flat[row] for row in range(dimensions)])
+        epsilons_flat = np.linalg.solve(coeffs, constants)
+        self.epsilons = np.reshape(epsilons_flat, self.ac_shape)
+        logger.log("wrapper: episilons are {0}".format(self.epsilons), level=logger.INFO)
+        self.epsilons_sigma = np.sum(self.epsilons)
+
+    def softmax_with_non_uniform_individual_constraints(self, inputs: np.ndarray):
+        """assumes that inputs lie between range 0 and 1"""
+        # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        # y = tf.minimum(inputs, 0)
+        # exp = tf.exp(y)
+        sigma = np.sum(inputs, axis=-1, keepdims=True)
+        return (inputs + self.epsilons) / (sigma + self.epsilons_sigma)
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        action = self.softmax_with_non_uniform_individual_constraints(action)
+        return self.env.step(action)
 
 
 class MMDPActionRounder:

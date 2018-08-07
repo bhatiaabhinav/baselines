@@ -27,11 +27,11 @@ from baselines.ers.noise import OrnsteinUhlenbeckActionNoise
 from baselines.ers.utils import mutated_ers, mutated_gaussian, normalize
 from baselines.ers.wrappers import (ActionSpaceNormalizeWrapper,
                                     BSStoMMDPWrapper, CartPoleWrapper,
-                                    ERSEnvImWrapper, ERSEnvWrapper,
                                     ERStoMMDPWrapper, LinearFrameStackWrapper,
                                     MMDPActionRounder,
                                     MMDPActionRounderWrapper,
                                     MMDPActionSpaceNormalizerWrapper,
+                                    MMDPInfeasibleActionHandlerWrapper,
                                     MMDPObsNormalizeWrapper,
                                     MMDPObsStackWrapper)
 
@@ -101,10 +101,10 @@ def train(model: DDPG_Model, experience_buffer: ExperienceBuffer, global_frame_i
     if advantage_learning:
         _, A_mse = model.main.train_A(states=s, actions=a, target_A=adv_s_a)
         _, V_mse = model.main.train_V(s, v_s)
-        _, av_max_A = model.main.train_a(s)
+        _, av_max_A, av_infeasibility = model.main.train_a(s)
     else:
         _, Q_mse = model.main.train_Q(states=s, actions=a, target_Q=q_s_a)
-        _, av_max_Q = model.main.train_a(s)
+        _, av_max_Q, av_infeasibility = model.main.train_a(s)
 
     f = global_frame_index
     if hard_update_target:
@@ -118,12 +118,14 @@ def train(model: DDPG_Model, experience_buffer: ExperienceBuffer, global_frame_i
             model.summaries.write_summaries({
                 'A_mse': A_mse,
                 'V_mse': V_mse,
-                'av_max_A': av_max_A
+                'av_max_A': av_max_A,
+                'av_infeasibility': av_infeasibility
             }, f)
         else:
             model.summaries.write_summaries({
                 'Q_mse': Q_mse,
-                'av_max_Q': av_max_Q
+                'av_max_Q': av_max_Q,
+                'av_infeasibility': av_infeasibility
             }, f)
 
 
@@ -234,7 +236,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
         sys_args_dict['target_divergence'] = exploration_sigma
         model = DDPG_Model(sess, use_param_noise, sys_args_dict)
         sess.run(tf.global_variables_initializer())
-        model.summaries.setup_scalar_summaries(['V_mse', 'A_mse', 'Q_mse', 'av_max_A', 'av_max_Q',
+        model.summaries.setup_scalar_summaries(['V_mse', 'A_mse', 'Q_mse', 'av_max_A', 'av_max_Q', 'av_infeasibility',
                                                 'frame_Q', 'frame_A', 'R', 'ep_length', 'R_exploit', 'blip_R_exploit', 'divergence', 'adaptive_sigma'])
         model.summaries.setup_histogram_summaries(['V', 'A', 'Q'])
     else:
@@ -374,23 +376,22 @@ if __name__ == '__main__':
         kwargs['use_layer_norm'] and kwargs['use_batch_norm']), "Cannot use both layer norm and batch norm"
     kwargs['save_path'] = os.path.join(logger.get_dir(), "model")
     kwargs['load_path'] = args.saved_model
-    ERSEnvWrapper.k = args.nstack
     MMDPObsStackWrapper.k = args.nstack
     FrameStack.k = args.nstack
     LinearFrameStackWrapper.k = args.nstack
+    if kwargs['soft_constraints']:
+        assert not kwargs['wolpertinger_critic_train'], "Wolpertinger cannot be used with soft constraints mode"
+        assert not kwargs['softmax_actor'], "Cannot have both hard constraints and soft constraints"
     if 'ERSEnv-ca' in kwargs['env_id']:
         kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
                               gym.Wrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
+                              MMDPInfeasibleActionHandlerWrapper if kwargs['soft_constraints'] else gym.Wrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
-        kwargs['softmax_actor'] = True
     elif 'BSSEnv' in kwargs['env_id']:
         kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
                               gym.Wrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
+                              MMDPInfeasibleActionHandlerWrapper if kwargs['soft_constraints'] else gym.Wrapper,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
-        kwargs['softmax_actor'] = True
-    elif 'ERSEnv-im' in kwargs['env_id']:
-        kwargs['wrappers'] = [ERSEnvImWrapper]
-        kwargs['softmax_actor'] = True
     elif 'Pole' in kwargs['env_id']:
         kwargs['wrappers'] = [CartPoleWrapper]
     elif 'NoFrameskip' in kwargs['env_id']:

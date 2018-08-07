@@ -74,6 +74,7 @@ def parse():
     parser.add_argument('--a_l2_reg', type=float, default=0)
     parser.add_argument('--reward_scaling', type=float, default=1)
     parser.add_argument('--softmax_actor', type=str2bool, default=False)
+    parser.add_argument('--soft_constraints', type=str2bool, default=False)
     parser.add_argument('--log_transform_inputs',
                         type=str2bool, default=False)
     parser.add_argument('--exploration_episodes', type=int, default=10)
