@@ -27,6 +27,7 @@ from baselines.ers.noise import OrnsteinUhlenbeckActionNoise
 from baselines.ers.utils import mutated_ers, mutated_gaussian, normalize
 from baselines.ers.wrappers import (ActionSpaceNormalizeWrapper,
                                     BSStoMMDPWrapper, CartPoleWrapper,
+                                    DummyWrapper, DummyWrapper2,
                                     ERStoMMDPWrapper, LinearFrameStackWrapper,
                                     MMDPActionRounder,
                                     MMDPActionRounderWrapper,
@@ -247,7 +248,8 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     noise = None
     experience_buffer = None
     action_rounder = None  # type: MMDPActionRounder
-    if softmax_actor and wolpertinger_critic_train:
+    if wolpertinger_critic_train:
+        logger.log("Wolpertinger mode is on")
         action_rounder = MMDPActionRounder(env)
     if learning:
         experience_buffer = ExperienceBuffer(
@@ -275,7 +277,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
                         mb_size), mutation_fn, exploration_sigma, train_steps=100)
             a = get_action(model=model, obs=obs, env=env, action_noise=noise,
                            use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action=softmax_actor, log=should_log, f=f)
-            if softmax_actor and wolpertinger_critic_train:
+            if wolpertinger_critic_train:
                 a = action_rounder.round_action(a)
             obs_, r, d, _ = env.step(a)
             r = r * reward_scaling
@@ -385,13 +387,15 @@ if __name__ == '__main__':
         assert not kwargs['softmax_actor'], "Cannot have both hard constraints and soft constraints"
     if 'ERSEnv-ca' in kwargs['env_id']:
         kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
-                              gym.Wrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
-                              MMDPInfeasibleActionHandlerWrapper if kwargs['soft_constraints'] else gym.Wrapper,
+                              DummyWrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
+                              MMDPInfeasibleActionHandlerWrapper if kwargs[
+                                  'soft_constraints'] else DummyWrapper2,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
     elif 'BSSEnv' in kwargs['env_id']:
         kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
-                              gym.Wrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
-                              MMDPInfeasibleActionHandlerWrapper if kwargs['soft_constraints'] else gym.Wrapper,
+                              DummyWrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
+                              MMDPInfeasibleActionHandlerWrapper if kwargs[
+                                  'soft_constraints'] else DummyWrapper2,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
     elif 'Pole' in kwargs['env_id']:
         kwargs['wrappers'] = [CartPoleWrapper]

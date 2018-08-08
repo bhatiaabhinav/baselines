@@ -9,6 +9,30 @@ from gym import error
 from baselines import logger
 
 
+class DummyWrapper(gym.Wrapper):
+    def __init__(self, env):
+        logger.log("Wrapping with", str(type(self)))
+        super().__init__(env)
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        return self.env.step(action)
+
+
+class DummyWrapper2(gym.Wrapper):
+    def __init__(self, env):
+        logger.log("Wrapping with", str(type(self)))
+        super().__init__(env)
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        return self.env.step(action)
+
+
 class CartPoleWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -205,6 +229,7 @@ class ERSEnvImWrapper(gym.Wrapper):
 
 class ERStoMMDPWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.metadata['nzones'] = self.metadata['nbases']
         self.metadata['nresources'] = self.metadata['nambs']
@@ -218,6 +243,7 @@ class ERStoMMDPWrapper(gym.Wrapper):
 
 class BSStoMMDPWrapper(gym.Wrapper):
     def __init__(self, env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.metadata['nzones'] = self.metadata['nzones']
         self.metadata['nresources'] = self.metadata['nbikes']
@@ -233,6 +259,7 @@ class MMDPObsStackWrapper(gym.Wrapper):
     k = 3
 
     def __init__(self, env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.last_k_demands = deque([], maxlen=self.k)
         self.nzones = self.metadata['nzones']
@@ -268,7 +295,9 @@ class MMDPInfeasibleActionHandlerWrapper(gym.Wrapper):
     Transforms an infeasible action to a feasible action.
     It should wrap action rounder wrapper/action normalizer wrapper.
     """
+
     def __init__(self, env: gym.Env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.ac_space = self.action_space  # type: gym.spaces.Box
         self.ac_shape = list(self.ac_space.shape)
@@ -295,10 +324,12 @@ class MMDPInfeasibleActionHandlerWrapper(gym.Wrapper):
         # coefficient matrix:
         coeffs = np.array([[(constraints_flat[row] - 1 if col == row else constraints_flat[row])
                             for col in range(dimensions)] for row in range(dimensions)])
-        constants = np.array([1 - constraints_flat[row] for row in range(dimensions)])
+        constants = np.array([1 - constraints_flat[row]
+                              for row in range(dimensions)])
         epsilons_flat = np.linalg.solve(coeffs, constants)
         self.epsilons = np.reshape(epsilons_flat, self.ac_shape)
-        logger.log("wrapper: episilons are {0}".format(self.epsilons), level=logger.INFO)
+        logger.log("wrapper: episilons are {0}".format(
+            self.epsilons), level=logger.INFO)
         self.epsilons_sigma = np.sum(self.epsilons)
 
     def softmax_with_non_uniform_individual_constraints(self, inputs: np.ndarray):
@@ -366,6 +397,7 @@ class MMDPActionRounderWrapper(gym.Wrapper):
     """Must wrap MMDPActionSpaceNormalizerWrapper. i.e. assumes action space is already normalized"""
 
     def __init__(self, env: gym.Env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.action_rounder = MMDPActionRounder(env)
 
@@ -381,6 +413,7 @@ class MMDPActionRounderWrapper(gym.Wrapper):
 class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
 
     def __init__(self, env: gym.Env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.nzones = self.metadata['nzones']
         self.nresources = self.metadata['nresources']
@@ -416,6 +449,7 @@ class MMDPObsNormalizeWrapper(gym.Wrapper):
     alloc_log_transform_t = 5
 
     def __init__(self, env):
+        logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.nzones = self.env.metadata['nzones']
         self.max_demand = self.env.observation_space.high[0:self.nzones]

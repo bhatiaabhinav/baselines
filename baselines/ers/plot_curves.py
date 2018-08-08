@@ -86,12 +86,16 @@ def read_all_data(dirs, metrics):
         if os.path.isdir(logs_dir):
             fname = os.path.join(logs_dir, 'progress.json')
             if os.path.exists(fname):
-                plot_data = load_progress(fname, metrics)
-                data[dir_name] = {
-                    "dir_name": dir_name,
-                    "plot_name": plot_name,
-                    "plot_data": plot_data
-                }
+                try:
+                    plot_data = load_progress(fname, metrics)
+                    data[dir_name] = {
+                        "dir_name": dir_name,
+                        "plot_name": plot_name,
+                        "plot_data": plot_data
+                    }
+                except Exception as e:
+                    print("Could not read {0}".format(dir_name))
+                    print(type(e), e)
     return data
 
 
@@ -99,15 +103,19 @@ def plot_figure(data, metric):
     fig = plt.figure()  # type: plt.Figure
     curves = []
     for dir_name, dir_data in data.items():
-        x = np.array(dir_data['plot_data']['Episode'])
-        y = np.array(dir_data['plot_data'][metric])
-        y_av = moving_average(y, args.smoothing)
-        curve, = plt.plot(x, y_av, label=dir_data['plot_name'])
-        curves.append(curve)
-        plt.xlabel('Episode no')
-        plt.ylabel(metric)
-        plt.legend()
-        plt.title('Average {0} Per episode'.format(metric))
+        try:
+            x = np.array(dir_data['plot_data']['Episode'])
+            y = np.array(dir_data['plot_data'][metric])
+            y_av = moving_average(y, args.smoothing)
+            curve, = plt.plot(x, y_av, label=dir_data['plot_name'])
+            curves.append(curve)
+        except Exception as e:
+            print("Could not plot {metric} for {dir_name}".format(metric=metric, dir_name=dir_name))
+            print(type(e), e)
+    plt.xlabel('Episode no')
+    plt.ylabel(metric)
+    plt.legend()
+    plt.title('Average {0} Per episode'.format(metric))
     if args.live:
         fig.canvas.mpl_connect('axes_enter_event', enter_figure)
         fig.canvas.mpl_connect('axes_leave_event', leave_figure)
@@ -119,14 +127,18 @@ def plot_figure(data, metric):
 def update_figure(fig: plt.Figure, curves, data, metric):
     plt.figure(fig.number)
     for dir_data, curve in zip(data.values(), curves):
-        x = np.array(dir_data['plot_data']['Episode'])
-        y = np.array(dir_data['plot_data'][metric])
-        y_av = moving_average(y, args.smoothing)
-        curve.set_xdata(x)
-        curve.set_ydata(y_av)
-        plt.gca().relim()
-        plt.gca().autoscale(enable=plt.gcf().autoscale and time.time() -
-                            plt.gcf().time_mouse_leave > args.update_interval)
+        try:
+            x = np.array(dir_data['plot_data']['Episode'])
+            y = np.array(dir_data['plot_data'][metric])
+            y_av = moving_average(y, args.smoothing)
+            curve.set_xdata(x)
+            curve.set_ydata(y_av)
+        except Exception as e:
+            print("Could not plot {metric} for {dir_name}".format(metric=metric, dir_name=dir_data['dir_name']))
+            print(type(e), e)
+    plt.gca().relim()
+    plt.gca().autoscale(enable=plt.gcf().autoscale and time.time() -
+                        plt.gcf().time_mouse_leave > args.update_interval)
 
 
 def save_figure(fig, name):
