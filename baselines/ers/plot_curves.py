@@ -23,9 +23,10 @@ parser.add_argument(
 parser.add_argument(
     '--run_ids', help='run ids to plot. seperated by comma. Dont specify to plot all', default=None)
 parser.add_argument(
-    '--metrics', help='seperated by comma', default='Reward,Blip_Reward')
+    '--metrics', help='seperated by comma', default='Reward')
 parser.add_argument('--smoothing', type=int, default=100)
 parser.add_argument('--live', type=str2bool, default=False)
+parser.add_argument('--style', default='seaborn')
 parser.add_argument('--update_interval', type=int, default=30)
 args = parser.parse_args()
 
@@ -100,7 +101,7 @@ def read_all_data(dirs, metrics):
 
 
 def plot_figure(data, metric):
-    fig = plt.figure()  # type: plt.Figure
+    fig = plt.figure(num=metric)  # type: plt.Figure
     curves = []
     for dir_name, dir_data in data.items():
         try:
@@ -125,7 +126,7 @@ def plot_figure(data, metric):
 
 
 def update_figure(fig: plt.Figure, curves, data, metric):
-    plt.figure(fig.number)
+    plt.figure(num=fig.number)
     for dir_data, curve in zip(data.values(), curves):
         try:
             x = np.array(dir_data['plot_data']['Episode'])
@@ -158,6 +159,8 @@ metrics = args.metrics.split(',')
 metrics = [m.strip('\"') for m in metrics]
 
 data = read_all_data(dirs, ["Episode"] + metrics)
+last_update_at = time.time()
+plt.style.use(args.style)
 
 if args.live:
     plt.ion()
@@ -171,8 +174,10 @@ for metric in metrics:
     save_figure(fig, metric)
 
 while args.live:
-    plt.pause(args.update_interval)
-    data = read_all_data(dirs, ["Episode"] + metrics)
-    for fig, curves, metric in zip(figs, curve_sets, metrics):
-        update_figure(fig, curves, data, metric)
-        save_figure(fig, metric)
+    plt.pause(10)
+    if time.time() - last_update_at >= args.update_interval:
+        data = read_all_data(dirs, ["Episode"] + metrics)
+        last_update_at = time.time()
+        for fig, curves, metric in zip(figs, curve_sets, metrics):
+            update_figure(fig, curves, data, metric)
+            save_figure(fig, metric)
