@@ -151,7 +151,7 @@ def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, constraints,
                               for row in range(dimensions)])
         epsilons_flat = np.linalg.solve(coeffs, constants)
         epsilons = np.reshape(epsilons_flat, inputs_shape)
-        logger.log("episilons are {0}".format(epsilons), level=logger.DEBUG)
+        logger.log("softmax_layer: episilons are {0}".format(epsilons), level=logger.INFO)
         epsilons_sigma = np.sum(epsilons)
         return (exp + epsilons) / (sigma + epsilons_sigma)
 
