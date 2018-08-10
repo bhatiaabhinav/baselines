@@ -46,6 +46,7 @@ color_map = {
     'cddpg_logboth': 'mediumpurple',
     'cddpg_logboth_wolpert': 'darkorchid',
     'static': 'silver',
+    'uniform': 'silver',
     'no_repositioning': 'silver',
     'greedy': 'gray',
     'vehicle_repositioning': 'gray'
@@ -65,6 +66,7 @@ legend_sort_order = {
     'cddpg_logboth': 120,
     'cddpg_logboth_wolpert': 130,
     'static': 0,
+    'uniform': 0,
     'no_repositioning': 0,
     'greedy': 10,
     'vehicle_repositioning': 10
