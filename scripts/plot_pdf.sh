@@ -1,0 +1,1 @@
+MPLBACKEND=pdf $GYM_PYTHON -m baselines.ers.plot_curves --env=$1 $2 $3 $4 $5
