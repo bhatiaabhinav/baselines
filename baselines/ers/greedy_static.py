@@ -10,7 +10,7 @@ import time
 from baselines.common import set_global_seeds
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 import gym
-import gym_ERSLE
+import gym_ERSLE  # noqa: F401
 
 
 def reseed(env, seed):
@@ -115,7 +115,7 @@ def test_candidate(allocation_per_base_so_far, candidate_base, env, num_ambs, nu
     target_allocation[candidate_base] += 1
     # rest go to base 0
     target_allocation[0] += num_ambs - sum(target_allocation)
-    target_allocation = np.array(target_allocation) / np.sum(target_allocation)
+    # target_allocation = np.array(target_allocation) / np.sum(target_allocation)
     av_reward = 0
     done = False
     while not done:
@@ -137,14 +137,8 @@ def optimize(policy, env, seed, ob_dtype='uint8', nsteps=5, nstack=4, total_time
             f.write(json.dumps({'policy': str(policy), 'env_id': env.id, 'nenvs': nenvs, 'seed': seed, 'ac_space': str(ac_space), 'ob_space': str(ob_space), 'ob_type': ob_dtype, 'nsteps': nsteps, 'nstack': nstack, 'total_timesteps': total_timesteps, 'frameskip': frameskip, 'vf_coef': vf_coef, 'ent_coef': ent_coef,
                                 'max_grad_norm': max_grad_norm, 'lr': lr, 'lrschedule': lrschedule, 'epsilon': epsilon, 'alpha': alpha, 'gamma': gamma, 'lambda': _lambda, 'log_interval': log_interval, 'saved_model_path': saved_model_path, 'render': render, 'no_training': no_training, 'abstime': time.time()}))
 
-    version_to_amb_map = {
-        '4': 24,
-        '5': 50,
-        '6': 32,
-        '7': 25,
-        '8': 25
-    }
-    num_ambs = version_to_amb_map[env.id[-1]]
+    version_to_amb_map = gym_ERSLE.version_to_ambs_map
+    num_ambs = version_to_amb_map['v' + env.id[-1]]
     num_bases = ac_space.shape[0]
     print('Num ambs: {0}\tNum bases: {1}\n'.format(num_ambs, num_bases))
 
