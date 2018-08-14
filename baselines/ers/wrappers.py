@@ -7,6 +7,7 @@ import numpy as np
 from gym import error
 
 from baselines import logger
+from baselines.ers.utils import scale
 
 
 class DummyWrapper(gym.Wrapper):
@@ -364,14 +365,13 @@ class MMDPActionRounder:
         if abs(sum(action) - 1) > 1e-6:
             raise error.InvalidAction(
                 "Invalid action. The action must sum to 1. Provided action was {0}".format(action))
-        try:
-            if np.any(action < -0.0):
-                raise ValueError(
-                    "Each dimension of action must be >=0. Provided action was {0}".format(action))
-        except Exception as e:
-            print(e)
-            print(action)
-            raise e
+        if np.any(action < -0.0):
+            raise ValueError(
+                "Each dimension of action must be >=0. Provided action was {0}".format(action))
+        if np.any(action > 1.0):
+            raise ValueError(
+                "Each dimension of action must be <=1. Provided action was {0}".format(action))
+
         allocation_fraction = action * self.nresources
         allocation = np.round(allocation_fraction)
         # print(allocation)
@@ -417,15 +417,20 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
         super().__init__(env)
         self.nzones = self.metadata['nzones']
         self.nresources = self.metadata['nresources']
-        ac_space_low = np.zeros(env.action_space.shape)
+        ac_space_low = env.action_space.low / self.nresources
         ac_space_high = env.action_space.high / self.nresources
+        assert np.all(
+            ac_space_low >= 0), 'Invalid action space. Individual requirements must be greater than or equal to 0'
         assert np.all(
             ac_space_high <= 1), 'Invalid action space. Individual capacities must be less than or equal the global capacity'
         assert np.sum(
-            ac_space_high) > 1, 'Invalid action space. Sum of individual capacities must be greater than global capacity'
+            ac_space_low) < 1, 'Invalid action space. Sum of individual requirements must be less than total resources'
+        assert np.sum(
+            ac_space_high) > 1, 'Invalid action space. Sum of individual capacities must be greater than total resources'
         self.action_space = gym.spaces.Box(
             low=ac_space_low, high=ac_space_high, dtype=np.float32)
-        logger.log('ac space high: {0}'.format(self.action_space.high))
+        logger.log('ac space low: ', str(self.action_space.low))
+        logger.log('ac space high: ', str(self.action_space.high))
 
     def reset(self):
         self.obs = self.env.reset()
@@ -445,45 +450,22 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
 
 class MMDPObsNormalizeWrapper(gym.Wrapper):
     """Must be used before MMDPObsStackWrapper"""
-    demand_log_transform_t = 0.005
-    alloc_log_transform_t = 5
 
     def __init__(self, env):
         logger.log("Wrapping with", str(type(self)))
         super().__init__(env)
         self.nzones = self.env.metadata['nzones']
-        self.max_demand = self.env.observation_space.high[0:self.nzones]
-        self.max_alloc = self.env.observation_space.high[self.nzones:2 * self.nzones]
-        self.max_time = self.env.observation_space.high[-1]
         self.observation_space = gym.spaces.Box(
             low=0, high=1, shape=self.env.observation_space.shape, dtype=np.float32)
-        self.metadata['alloc_log_transform_t'] = self.alloc_log_transform_t
-        self.metadata['demand_log_transform_t'] = self.demand_log_transform_t
-        self.metadata['max_demand'] = self.max_demand
-        self.metadata['max_alloc'] = self.max_alloc
-        logger.log('obs space high: {0}'.format(self.observation_space.high))
-
-    def _transform(self, x, max_x, t):
-        # return self._log_transform(x, max_x, t)
-        return x / max_x
-
-    def _log_transform(self, x, max_x, t):
-        return np.log(1 + x / t) / np.log(1 + max_x / t)
+        logger.log('ob space low: ', str(self.observation_space.low))
+        logger.log('ob space high: ', str(self.observation_space.high))
 
     def _transform_obs(self, obs):
-        obs = np.copy(obs)
-        logger.log('demand: {0}'.format(
-            np.round(obs[0:self.nzones], 2)), level=logger.DEBUG)
-        obs[0:self.nzones] = self._transform(
-            obs[0:self.nzones], self.max_demand, self.demand_log_transform_t)
-        logger.log('cur_alloc: {0}'.format(
-            np.round(obs[self.nzones: 2 * self.nzones], 2)), level=logger.DEBUG)
-        obs[self.nzones: 2 * self.nzones] = self._transform(
-            obs[self.nzones: 2 * self.nzones], self.max_alloc, self.alloc_log_transform_t)
-        logger.log('cur_time: {0}'.format(
-            np.round(obs[-1], 2)), level=logger.DEBUG)
-        obs[-1] = obs[-1] / self.max_time
-        return obs
+        logger.log('demand: ', str(obs[0:self.nzones]), level=logger.DEBUG)
+        logger.log('cur_alloc: ', str(
+            obs[self.nzones: 2 * self.nzones]), level=logger.DEBUG)
+        logger.log('cur_time: ', str(obs[-1]), level=logger.DEBUG)
+        return scale(obs, self.env.observation_space.low, self.env.observation_space.high, 0, 1)
 
     def reset(self):
         return self._transform_obs(self.env.reset())

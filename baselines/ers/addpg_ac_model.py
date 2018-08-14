@@ -8,7 +8,8 @@ from gym.spaces import Box
 from baselines import logger
 from baselines.ers.utils import (tf_deep_net, tf_log_transform_adaptive,
                                  tf_normalize,
-                                 tf_safe_softmax_with_non_uniform_individual_constraints,
+                                 # tf_safe_softmax_with_non_uniform_individual_constraints,
+                                 tf_softmax_with_min_max_constraints,
                                  tf_scale)
 
 
@@ -155,9 +156,12 @@ class DDPG_Model_Base:
             a = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'a_network', self.nn_size, use_ln=self.use_layer_norm and self.use_norm_actor,
                             use_bn=self.use_batch_norm and self.use_norm_actor, training=self._is_training_a, output_shape=self.ac_shape)
             if self.softmax_actor:
-                logger.log('Actor output using contrained softmax layer')
-                a = tf_safe_softmax_with_non_uniform_individual_constraints(
-                    a, self.ac_high, 'constrained_softmax')
+                logger.log(
+                    'Actor output using min-max contrained softmax layer')
+                # a = tf_safe_softmax_with_non_uniform_individual_constraints(
+                #     a, self.ac_high, 'constrained_softmax')
+                a = tf_softmax_with_min_max_constraints(
+                    a, self.ac_low, self.ac_high, 'constrained_softmax_minmax')
             elif self.soft_constraints:
                 logger.log('Actor output in range 0 to 1 using scaled tanh')
                 a = tf.minimum(tf.maximum(
@@ -311,10 +315,13 @@ class DDPG_Model_Main(DDPG_Model_Base):
             with tf.name_scope('infeasibility'):
                 sum_violation = tf.reduce_sum(self._a, axis=-1) - 1
                 capacity_violation = tf.maximum(0.0, self._a - self.ac_high)
+                requirement_violation = tf.maximum(0.0, self.ac_low - self._a)
                 self._infeasibility += tf.reduce_mean(
                     tf.square(sum_violation), name='global_infeasibility')
                 self._infeasibility += tf.reduce_mean(
                     capacity_violation, name='capacity_infeasibility')
+                self._infeasibility += tf.reduce_mean(
+                    requirement_violation, name='requirement_infeasibility')
             if self.soft_constraints:
                 logger.log('Adding infeasibility penalty with lambda {0}'.format(
                     soft_constraints_lambda))

@@ -151,9 +151,50 @@ def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, constraints,
                               for row in range(dimensions)])
         epsilons_flat = np.linalg.solve(coeffs, constants)
         epsilons = np.reshape(epsilons_flat, inputs_shape)
-        logger.log("softmax_layer: episilons are {0}".format(epsilons), level=logger.INFO)
+        logger.log("constrained_softmax_max: episilons are {0}".format(
+            epsilons), level=logger.INFO)
         epsilons_sigma = np.sum(epsilons)
         return (exp + epsilons) / (sigma + epsilons_sigma)
+
+
+def tf_softmax_with_min_max_constraints(inputs, min_constraints, max_constraints, scope):
+    '''we want z_i to sum to 1. s.t. z_i in [m_i, M_i].\n
+    so we distribute m_i to z_i first.\n
+    then the problem statement becomes:\n
+    find vector u s.t. u_i sums to s=1-sum(m_i) and u_i in [0, M_i - m_i]\n
+    to do that, we do u = s * constrained_softmax_max_constraints(inputs, (M-m)/s)n\
+    then z_i = m_i + u_i
+
+    Arguments:
+        inputs {tensor} -- its components can take any values in [-inf, inf]. the first axis is assumed to batch axis.
+        min_constraints {numpy.ndarray} -- of same shape as inputs (without the batch dimension)
+        max_constraints {numpy.ndarray} -- of same shape as inputs (without the batch dimension)
+        scope {str} -- tensorflow variable scope
+    '''
+    inputs_shape = inputs.shape.as_list()[1:]
+    if list(max_constraints.shape) != inputs_shape:
+        raise ValueError('shape of max_constraints {0} is not compatible with shape of inputs {1}'.format(
+            max_constraints.shape, inputs_shape))
+    if list(min_constraints.shape) != inputs_shape:
+        raise ValueError('shape of min_constraints {0} is not compatible with shape of inputs {1}'.format(
+            min_constraints.shape, inputs_shape))
+    if np.any(max_constraints < 0) or np.any(max_constraints > 1):
+        raise ValueError(
+            "max_constraints needs to be in range [0, 1]")
+    if np.any(min_constraints < 0) or np.any(min_constraints > 1):
+        raise ValueError(
+            "min_constraints needs to be in range [0, 1]")
+    if np.sum(max_constraints) <= 1:
+        raise ValueError("sum of max_constrains needs to be greater than 1")
+    if np.sum(min_constraints) >= 1:
+        raise ValueError("sum of min_constrains needs to be less than 1")
+
+    s = 1 - np.sum(min_constraints)
+    u_max_constraints = np.minimum(1.0, (max_constraints - min_constraints) / s)
+    u = s * tf_safe_softmax_with_non_uniform_individual_constraints(
+        inputs, u_max_constraints, "constrained_softmax_max")
+    z = min_constraints + u
+    return z
 
 
 def tf_conv_layers(inputs, inputs_shape, scope, use_ln=False, use_bn=False, training=False):

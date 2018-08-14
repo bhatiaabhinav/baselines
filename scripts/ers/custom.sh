@@ -8,10 +8,10 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--soft_constraints=False \
 	--soft_constraints_lambda=10000 \
 	--softmax_actor=True \
-	--wolpertinger_critic_train=False \
-	--log_norm_obs_alloc=True \
-	--log_norm_action=True \
-	--rms_norm_action=False \
+	--wolpertinger_critic_train=True \
+	--log_norm_obs_alloc=False \
+	--log_norm_action=False \
+	--rms_norm_action=True \
 	--tau=0.001 \
 	--gamma=1 \
 	--exploration_episodes=10 \
@@ -26,7 +26,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--l2_reg=1e-2 \
 	--train_every=2 \
 	--exploit_every=4 \
-	--logger_level=INFO \
+	--logger_level=DEBUG \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=$2 \
+	--run_no_prefix=cddpg_rmsac_wolpert

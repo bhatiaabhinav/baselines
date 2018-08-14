@@ -198,7 +198,7 @@ def plot_figure(data, metric, episodes):
     plt.xlabel('Episode no')
     plt.ylabel(metric)
     handles, labels = plt.gca().get_legend_handles_labels()
-    labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: -legend_sort_order[label_to_dir_name_map[t[0]]]))
+    labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: -legend_sort_order.get(label_to_dir_name_map[t[0]], 1000)))
     plt.legend(handles, labels)
     plt.title('Average {0} Per episode'.format(metric))
     if args.live:
@@ -261,6 +261,6 @@ while args.live:
     if time.time() - last_update_at >= args.update_interval:
         data, episodes = read_all_data(dirs, ["Episode"] + metrics)
         last_update_at = time.time()
-        for fig, curves, metric in zip(figs, curve_sets, metrics, episodes):
-            update_figure(fig, curves, data, metric)
+        for fig, curves, metric in zip(figs, curve_sets, metrics):
+            update_figure(fig, curves, data, metric, episodes)
             save_figure(fig, metric)
