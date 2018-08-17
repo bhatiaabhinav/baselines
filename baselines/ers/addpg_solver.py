@@ -226,6 +226,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     if actor is None:
         sys_args_dict["ob_space"] = env.observation_space
         sys_args_dict["ac_space"] = env.action_space
+        sys_args_dict["constraints"] = env.metadata['constraints']
         # sys_args_dict["log_transform_max_x"] = env.metadata.get(
         #     'max_alloc', None)
         # sys_args_dict["log_transform_t"] = env.metadata.get(

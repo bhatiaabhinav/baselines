@@ -7,6 +7,9 @@ import numpy as np
 from gym import error
 
 from baselines import logger
+from baselines.ers.constraints import (convert_to_constraints_dict,
+                                       count_leaf_nodes_in_constraints,
+                                       normalize_constraints)
 from baselines.ers.utils import scale
 
 
@@ -234,6 +237,11 @@ class ERStoMMDPWrapper(gym.Wrapper):
         super().__init__(env)
         self.metadata['nzones'] = self.metadata['nbases']
         self.metadata['nresources'] = self.metadata['nambs']
+        if 'constraints' not in self.metadata or self.metadata['constraints'] is None:
+            self.metadata['constraints'] = convert_to_constraints_dict(
+                self.metadata['nzones'], self.metadata['nresources'], env.action_space.low, env.action_space.high)
+        assert count_leaf_nodes_in_constraints(
+            self.metadata['constraints']) == self.metadata['nzones'], "num of leaf nodes in constraints tree should be same as number of zones"
 
     def reset(self):
         return self.env.reset()
@@ -248,6 +256,11 @@ class BSStoMMDPWrapper(gym.Wrapper):
         super().__init__(env)
         self.metadata['nzones'] = self.metadata['nzones']
         self.metadata['nresources'] = self.metadata['nbikes']
+        if 'constraints' not in self.metadata or self.metadata['constraints'] is None:
+            self.metadata['constraints'] = convert_to_constraints_dict(
+                self.nzones, self.nresources, env.action_space.low, env.action_space.high)
+        assert count_leaf_nodes_in_constraints(
+            self.metadata['constraints']) == self.metadata['nzones'], "num of leaf nodes in constraints tree should be same as number of zones"
 
     def reset(self):
         return self.env.reset()
@@ -431,6 +444,7 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
             low=ac_space_low, high=ac_space_high, dtype=np.float32)
         logger.log('ac space low: ', str(self.action_space.low))
         logger.log('ac space high: ', str(self.action_space.high))
+        normalize_constraints(self.metadata["constraints"])
 
     def reset(self):
         self.obs = self.env.reset()
@@ -443,7 +457,7 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
         if np.sum(allocation) != self.nresources:
             raise error.InvalidAction(
                 "Invalid action. The action, when rounded, should sum to nresources. Provided action was {0}".format(allocation))
-        logger.log("action: {0}".format(allocation), level=logger.DEBUG)
+        logger.log("action: {0}".format(allocation), level=logger.INFO)
         self.obs, r, d, info = self.env.step(allocation)
         return self.obs, r, d, info
 
