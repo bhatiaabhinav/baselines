@@ -9,6 +9,10 @@ capv6:pyERSEnv-ca-dynamic-cap8-30-v6,\
 blipscapv6:pyERSEnv-ca-dynamic-blips-cap8-30-v6,\
 sgcapv6:SgERSEnv-ca-dynamic-cap8-30-v6,\
 sgblipscapv6:SgERSEnv-ca-dynamic-blips-cap8-30-v6,\
+nc1v6:pyERSEnv-ca-dynamic-constraints1-30-v6,\
+blipsnc1v6:pyERSEnv-ca-dynamic-blips-constraints1-30-v6,\
+sgnc1v6:SgERSEnv-ca-dynamic-constraints1-30-v6, \
+sgblipsnc1v6:SgERSEnv-ca-dynamic-blips-constraints1-30-v6, \
 bssv0:BSSEnv-v0,\
 bssv1:BSSEnv-v1,\
 bssv2:BSSEnv-v2\

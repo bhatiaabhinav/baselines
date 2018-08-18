@@ -457,7 +457,7 @@ class MMDPActionSpaceNormalizerWrapper(gym.Wrapper):
         if np.sum(allocation) != self.nresources:
             raise error.InvalidAction(
                 "Invalid action. The action, when rounded, should sum to nresources. Provided action was {0}".format(allocation))
-        logger.log("action: {0}".format(allocation), level=logger.INFO)
+        logger.log("action: {0}".format(allocation), level=logger.DEBUG)
         self.obs, r, d, info = self.env.step(allocation)
         return self.obs, r, d, info
 

@@ -317,7 +317,9 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
 
 
 def main(sys_args_dict, seed=0, learning_env_seed=0, test_env_seed=42, test_mode=False, analysis_mode=False, save_path=None, load_path=None, **kwargs):
-    with tf.Session() as sess:
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    with tf.Session(config=config) as sess:
         if not (test_mode or analysis_mode):
             logger.log('Training actor. seed={0}. learning_env_seed={1}'.format(
                 seed, learning_env_seed))
