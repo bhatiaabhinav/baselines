@@ -24,7 +24,7 @@ parser.add_argument(
     '--run_ids', help='run ids to plot. seperated by comma. Dont specify to plot all', default=None)
 parser.add_argument(
     '--metrics', help='seperated by comma', default='Reward')
-parser.add_argument('--smoothing', type=int, default=100)
+parser.add_argument('--smoothing', type=int, default=250)
 parser.add_argument('--live', type=str2bool, default=False)
 parser.add_argument('--style', default='seaborn')
 parser.add_argument('--update_interval', type=int, default=30)
@@ -35,6 +35,7 @@ args = parser.parse_args()
 color_map = {
     'sddpg': 'gold',
     'sddpg_rmsac': 'orange',
+    'sddpg_rmsac_wolpert': 'darkorange',
     'sddpg_logac': 'coral',
     'sddpg_logboth': 'indianred',
     'cddpg': 'lightgreen',
@@ -55,6 +56,7 @@ color_map = {
 legend_sort_order = {
     'sddpg': 20,
     'sddpg_rmsac': 30,
+    'sddpg_rmsac_wolpert': 35,
     'sddpg_logac': 40,
     'sddpg_logboth': 50,
     'cddpg': 60,
