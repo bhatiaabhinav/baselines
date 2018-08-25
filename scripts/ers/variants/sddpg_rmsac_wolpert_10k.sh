@@ -1,17 +1,17 @@
 $GYM_PYTHON -m baselines.ers.addpg_solver \
-	--env=BSSEnv-$1 \
+	--env=$1 \
 	--seed=0 \
 	--test_seed=42 \
 	--ob_dtype=float32 \
 	--nstack=3 \
-	--nn_size="[400,300]" \
-	--soft_constraints=False \
+	--nn_size="[128,96]" \
+	--soft_constraints=True \
 	--soft_constraints_lambda=10000 \
-	--softmax_actor=True \
-	--wolpertinger_critic_train=False \
-	--log_norm_obs_alloc=True \
-	--log_norm_action=True \
-	--rms_norm_action=False \
+	--softmax_actor=False \
+	--wolpertinger_critic_train=True \
+	--log_norm_obs_alloc=False \
+	--log_norm_action=False \
+	--rms_norm_action=True \
 	--tau=0.001 \
 	--gamma=1 \
 	--exploration_episodes=10 \
@@ -29,4 +29,4 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--logger_level=INFO \
 	--use_batch_norm=False \
 	--use_layer_norm=True \
-	--run_no_prefix=aaai
+	--run_no_prefix=sddpg_rmsac_wolpert
