@@ -258,7 +258,7 @@ class BSStoMMDPWrapper(gym.Wrapper):
         self.metadata['nresources'] = self.metadata['nbikes']
         if 'constraints' not in self.metadata or self.metadata['constraints'] is None:
             self.metadata['constraints'] = convert_to_constraints_dict(
-                self.nzones, self.nresources, env.action_space.low, env.action_space.high)
+                self.metadata['nzones'], self.metadata['nresources'], env.action_space.low, env.action_space.high)
         assert count_leaf_nodes_in_constraints(
             self.metadata['constraints']) == self.metadata['nzones'], "num of leaf nodes in constraints tree should be same as number of zones"
 
