@@ -220,13 +220,14 @@ def tf_minmax_constrained_softmax(inputs, min_constraints, max_constraints, scop
     if np.sum(min_constraints) >= 1:
         raise ValueError("sum of min_constraints needs to be less than 1")
 
-    s = 1 - np.sum(min_constraints)
-    u_max_constraints = np.minimum(
-        1.0, (max_constraints - min_constraints) / s)
-    u = s * tf_max_constrained_softmax(
-        inputs, u_max_constraints, "max_constrained_softmax")  # [batch, dimensions]
-    z = min_constraints + u
-    return z
+    with tf.variable_scope(scope):
+        s = 1 - np.sum(min_constraints)
+        u_max_constraints = np.minimum(
+            1.0, (max_constraints - min_constraints) / s)
+        u = s * tf_max_constrained_softmax(
+            inputs, u_max_constraints, "max_constrained_softmax")  # [batch, dimensions]
+        z = min_constraints + u
+        return z
 
 
 def _tf_nested_constrained_softmax(inputs, constrained_node, scope, z_tree={}, z_node=None):
@@ -336,28 +337,30 @@ def tf_nested_constrained_softmax(inputs, constraints, scope, z_tree={}):
 
 
 def tf_infeasibility(actions, constraints_node, scope):
-    _sum = 0
-    zone_ids = get_zone_ids_under(constraints_node)
-    for zone_id in zone_ids:
-        _sum += actions[:, zone_id]  # shape = [batch_size]
-    with tf.variable_scope('sum_violation'):
-        if constraints_node.get('equals', None) is not None:
-            sum_violation = tf.abs(_sum - constraints_node['equals'])
-        else:
-            sum_violation = 0
-    with tf.variable_scope('min_violation'):
-        min_violation = tf.maximum(0.0, constraints_node["min"] - _sum)
-    with tf.variable_scope('max_violation'):
-        max_violation = tf.maximum(0.0, _sum - constraints_node["max"])
+    with tf.variable_scope(scope):
+        with tf.variable_scope('sum'):
+            _sum = 0
+            zone_ids = get_zone_ids_under(constraints_node)
+            for zone_id in zone_ids:
+                _sum += actions[:, zone_id]  # shape = [batch_size]
+        with tf.variable_scope('sum_violation'):
+            if constraints_node.get('equals', None) is not None:
+                sum_violation = tf.abs(_sum - constraints_node['equals'])
+            else:
+                sum_violation = 0
+        with tf.variable_scope('min_violation'):
+            min_violation = tf.maximum(0.0, constraints_node["min"] - _sum)
+        with tf.variable_scope('max_violation'):
+            max_violation = tf.maximum(0.0, _sum - constraints_node["max"])
 
-    for c in constraints_node.get('children', []):
-        c_sum_violtion, c_min_violation, c_max_violation = tf_infeasibility(
-            actions, c, 'infeasibility_{0}'.format(c['name']))
-        sum_violation += c_sum_violtion
-        min_violation += c_min_violation
-        max_violation += c_max_violation
+        for c in constraints_node.get('children', []):
+            c_sum_violtion, c_min_violation, c_max_violation = tf_infeasibility(
+                actions, c, 'infeasibility_{0}'.format(c['name']))
+            sum_violation += c_sum_violtion
+            min_violation += c_min_violation
+            max_violation += c_max_violation
 
-    return sum_violation, min_violation, max_violation
+        return sum_violation, min_violation, max_violation
 
 
 def _get_lp_rows(constraints_node):
