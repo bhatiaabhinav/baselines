@@ -362,7 +362,8 @@ class MMDPActionWrapper(gym.Wrapper):
                 np.float64), self.env.metadata['constraints'])
             feasible_action = solution['feasible_action']
             if not self._logged_cplex_problem_yet:
-                solution['prob'].write(os.path.join(logger.get_dir(), 'nearest_feasible_cplex.lp'))
+                solution['prob'].write(os.path.join(
+                    logger.get_dir(), 'nearest_feasible_cplex.lp'))
                 self._logged_cplex_problem_yet = True
         else:
             feasible_action = action
@@ -374,7 +375,8 @@ class MMDPActionWrapper(gym.Wrapper):
         return self.env.reset()
 
     def step(self, action):
-        return self.env.step(self.wrap(action))
+        action, change = self.wrap(action)
+        return self.env.step(action)
 
 
 class MMDPObsNormalizeWrapper(gym.Wrapper):
