@@ -134,6 +134,7 @@ def tf_safe_softmax_with_non_uniform_individual_constraints(inputs, constraints,
         epsilons = np.reshape(epsilons_flat, inputs_shape)
         logger.log("constrained_softmax_max: episilons are {0}".format(
             epsilons), level=logger.INFO)
+        assert np.all(epsilons >= 0), "The given constraints are not supported yet. They should satisfy for all k, C_k >= (sum(C) - 1)/(len(C)-1)"
         epsilons_sigma = np.sum(epsilons)
         return (y + epsilons) / (sigma + epsilons_sigma)
 
