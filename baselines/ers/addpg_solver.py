@@ -27,13 +27,9 @@ from baselines.ers.noise import OrnsteinUhlenbeckActionNoise
 from baselines.ers.utils import mutated_ers, mutated_gaussian, normalize
 from baselines.ers.wrappers import (ActionSpaceNormalizeWrapper,
                                     BSStoMMDPWrapper, CartPoleWrapper,
-                                    DummyWrapper, DummyWrapper2,
                                     ERStoMMDPWrapper, LinearFrameStackWrapper,
-                                    MMDPActionRounder,
-                                    MMDPActionRounderWrapper,
                                     MMDPActionSpaceNormalizerWrapper,
-                                    MMDPInfeasibleActionHandlerWrapper,
-                                    MMDPObsNormalizeWrapper,
+                                    MMDPActionWrapper, MMDPObsNormalizeWrapper,
                                     MMDPObsStackWrapper)
 
 
@@ -213,8 +209,11 @@ def load_model(model: DDPG_Model, load_path):
 
 def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed=0, learning_env_seed=0,
          test_env_seed=42, learning_episodes=40000, test_episodes=100, exploration_episodes=10, train_every=1,
-         mb_size=64, use_safe_noise=False, replay_buffer_length=1e6, replay_memory_size_in_bytes=None, use_param_noise=False, init_scale=1e-3, reward_scaling=1, Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, exploit_every=10,
-         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False, render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, softmax_actor=False, wolpertinger_critic_train=False, monitor=True, video_interval=50, **kwargs):
+         mb_size=64, use_safe_noise=False, replay_buffer_length=1e6, replay_memory_size_in_bytes=None, use_param_noise=False,
+         init_scale=1e-3, reward_scaling=1, Noise_type=OrnsteinUhlenbeckActionNoise, exploration_sigma=0.2, exploration_theta=1, exploit_every=10,
+         gamma=0.99, double_Q_learning=False, advantage_learning=False, hard_update_target=False, tau=0.001, use_ga_optimization=False, render=False,
+         render_mode='human', render_fps=60, log_every=100, save_every=50, load_every=1000000, save_path=None, load_path=None, is_mmdp=False,
+         softmax_actor=False, wolpertinger_critic_train=False, monitor=True, video_interval=50, **kwargs):
     set_global_seeds(seed)
     env = gym.make(env_id)  # type: gym.Env
     for W in wrappers:
@@ -239,8 +238,10 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
         model = DDPG_Model(sess, use_param_noise, sys_args_dict)
         sess.run(tf.global_variables_initializer())
         model.summaries.setup_scalar_summaries(['V_mse', 'A_mse', 'Q_mse', 'av_max_A', 'av_max_Q', 'av_infeasibility',
-                                                'frame_Q', 'frame_A', 'R', 'ep_length', 'R_exploit', 'blip_R_exploit', 'divergence', 'adaptive_sigma'])
-        model.summaries.setup_histogram_summaries(['V', 'A', 'Q'])
+                                                'frame_Q', 'frame_A', 'R', 'ep_length', 'R_exploit', 'blip_R_exploit',
+                                                'divergence', 'adaptive_sigma', 'wrap_effect'])
+        model.summaries.setup_histogram_summaries(
+            ['ep_av_action'])
     else:
         model = actor
     if load_path:
@@ -248,10 +249,13 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     model.target.update_from_main_network()
     noise = None
     experience_buffer = None
-    action_rounder = None  # type: MMDPActionRounder
-    if wolpertinger_critic_train:
-        logger.log("Wolpertinger mode is on")
-        action_rounder = MMDPActionRounder(env)
+    if is_mmdp:
+        if wolpertinger_critic_train:
+            logger.log("Wolpertinger mode")
+        action_wrapper = MMDPActionWrapper(
+            env, assume_feasible_action_input=softmax_actor)
+        logger.log(
+            'Constrained Softmax Layer Mode' if softmax_actor else 'Soft Constraints Mode')
     if learning:
         experience_buffer = ExperienceBuffer(
             length=replay_buffer_length, size_in_bytes=replay_memory_size_in_bytes)
@@ -261,7 +265,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     Rs, exploit_Rs, exploit_blip_Rs, f = [], [], [], 0
     env.seed(learning_env_seed if learning else test_env_seed)
     for ep in range(learning_episodes if learning else test_episodes):
-        obs, d, R, blip_R, ep_l = env.reset(), False, 0, 0, 0
+        obs, d, R, blip_R, ep_l, ep_sum_a = env.reset(), False, 0, 0, 0, 0
         exploit_mode = (ep % exploit_every == 0) or not learning
         if not exploit_mode:
             reset_noise(model, noise, use_param_noise, use_safe_noise,
@@ -276,20 +280,31 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
                         'ERS' in env_id or 'BSS' in env_id) else mutated_gaussian
                     ga_optimize_actor(model, experience_buffer.random_states(
                         mb_size), mutation_fn, exploration_sigma, train_steps=100)
-            a = get_action(model=model, obs=obs, env=env, action_noise=noise,
-                           use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action=softmax_actor, log=should_log, f=f)
-            if wolpertinger_critic_train:
-                a = action_rounder.round_action(a)
-            obs_, r, d, _ = env.step(a)
+            raw_action = get_action(model=model, obs=obs, env=env, action_noise=noise,
+                                    use_param_noise=use_param_noise, exploit_mode=exploit_mode, normalize_action=softmax_actor, log=should_log, f=f)
+            if is_mmdp:
+                action, wrap_effect = action_wrapper.wrap(raw_action)
+                if should_log:
+                    model.summaries.write_summaries(
+                        {'wrap_effect': wrap_effect}, f)
+            else:
+                action = raw_action
+            ep_sum_a = ep_sum_a + action
+            obs_, r, d, _ = env.step(action)
             r = r * reward_scaling
             if render:
                 env.render(mode=render_mode)
                 if render_fps is not None:
                     time.sleep(1 / render_fps)
             if learning:
-                experience_buffer.add(Experience(obs, a, r, d, _, obs_))
+                if wolpertinger_critic_train:
+                    critic_training_action = action
+                else:
+                    critic_training_action = raw_action
+                experience_buffer.add(Experience(
+                    obs, critic_training_action, r, d, _, obs_))
                 model.main.update_running_ob_stats(obs)
-                model.main.update_running_ac_stats(a)
+                model.main.update_running_ac_stats(raw_action)
             obs, R, f, ep_l = obs_, R + r, f + 1, ep_l + 1
             if 'blip_reward' in _:
                 blip_R += _['blip_reward']
@@ -301,8 +316,10 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
         logger.logkvs({'Episode': ep, 'Reward': R, 'Exploited': exploit_mode, 'Blip_Reward': blip_R, 'Length': ep_l, 'Average Reward': np.average(
             Rs[-100:]), 'Exploit Average Reward': np.average(exploit_Rs[-100:]), 'Exploit Average Blip Reward': np.average(exploit_blip_Rs[-100:])})
         logger.dump_tabular()
+        ep_av_a = ep_sum_a * env.metadata.get('nresources', 1) / ep_l
+        logger.log('Average action: {0}'.format(ep_av_a))
         model.summaries.write_summaries(
-            {'R': R, 'R_exploit': exploit_Rs[-1], 'blip_R_exploit': exploit_blip_Rs[-1], 'ep_length': ep_l}, ep)
+            {'R': R, 'R_exploit': exploit_Rs[-1], 'blip_R_exploit': exploit_blip_Rs[-1], 'ep_length': ep_l, 'ep_av_action': ep_av_a}, ep)
         if save_path and ep % save_every == 0:
             model.main.save(save_path)
             logger.log('model saved')
@@ -386,20 +403,16 @@ if __name__ == '__main__':
     FrameStack.k = args.nstack
     LinearFrameStackWrapper.k = args.nstack
     if kwargs['soft_constraints']:
-        assert not kwargs['wolpertinger_critic_train'], "Wolpertinger cannot be used with soft constraints mode"
+        # assert not kwargs['wolpertinger_critic_train'], "Wolpertinger cannot be used with soft constraints mode"
         assert not kwargs['softmax_actor'], "Cannot have both hard constraints and soft constraints"
     if 'ERSEnv-ca' in kwargs['env_id']:
         kwargs['wrappers'] = [ERStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
-                              DummyWrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
-                              MMDPInfeasibleActionHandlerWrapper if kwargs[
-                                  'soft_constraints'] else DummyWrapper2,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
+        kwargs['is_mmdp'] = True
     elif 'BSSEnv' in kwargs['env_id']:
         kwargs['wrappers'] = [BSStoMMDPWrapper, MMDPActionSpaceNormalizerWrapper,
-                              DummyWrapper if kwargs['wolpertinger_critic_train'] else MMDPActionRounderWrapper,
-                              MMDPInfeasibleActionHandlerWrapper if kwargs[
-                                  'soft_constraints'] else DummyWrapper2,
                               MMDPObsNormalizeWrapper, MMDPObsStackWrapper]
+        kwargs['is_mmdp'] = True
     elif 'Pole' in kwargs['env_id']:
         kwargs['wrappers'] = [CartPoleWrapper]
     elif 'NoFrameskip' in kwargs['env_id']:

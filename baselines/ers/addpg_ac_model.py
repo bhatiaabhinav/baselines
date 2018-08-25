@@ -6,10 +6,12 @@ import tensorflow as tf
 from gym.spaces import Box
 
 from baselines import logger
-from baselines.ers.constraints import count_nodes_in_constraints
+from baselines.ers.constraints import (count_nodes_in_constraints,
+                                       tf_infeasibility,
+                                       tf_nested_constrained_softmax)
+
 from baselines.ers.utils import (tf_deep_net,  # tf_safe_softmax_with_non_uniform_individual_constraints,; tf_softmax_with_min_max_constraints,
                                  tf_log_transform_adaptive,
-                                 tf_nested_softmax_with_min_max_constraints,
                                  tf_normalize, tf_scale)
 
 
@@ -159,20 +161,13 @@ class DDPG_Model_Base:
             a = tf_deep_net(states, self.ob_shape, self.ob_dtype, 'a_network', self.nn_size, use_ln=self.use_layer_norm and self.use_norm_actor,
                             use_bn=self.use_batch_norm and self.use_norm_actor, training=self._is_training_a, output_shape=output_shape)
             if self.softmax_actor:
-                # logger.log(
-                #     'Actor output using min-max contrained softmax layer')
-                # a = tf_softmax_with_min_max_constraints(
-                #     a, self.ac_low, self.ac_high, 'constrained_softmax_minmax')
-                # logger.log(
-                #     'Actor output using dynamic max_contrained_softmax layer')
-                # constraints = self.ac_high
-                # a = tf_softmax_with_dynamic_max_constraints(a, constraints, scope='dynamic_constrained_softmax_max')
                 logger.log(
-                    'Actor output using dynamic nested min-max contrained softmax layer')
+                    'Actor output using nested contrained softmax layer')
                 z_tree = {}
-                a = tf_nested_softmax_with_min_max_constraints(
-                    a, self.constraints, 'nested_constrained_softmax_minmax', z_tree=z_tree)
-                # print(z_tree)
+                a = tf_nested_constrained_softmax(
+                    a, self.constraints, 'nested_constrained_softmax', z_tree=z_tree)
+                with open(os.path.join(logger.get_dir(), 'z_tree.txt'), 'w') as file:
+                    file.write(str(z_tree))
             elif self.soft_constraints:
                 logger.log('Actor output in range 0 to 1 using scaled tanh')
                 a = tf.minimum(tf.maximum(
@@ -324,20 +319,14 @@ class DDPG_Model_Main(DDPG_Model_Base):
             self._av_A = tf.reduce_mean(self._A)
             self._infeasibility = 0
             with tf.name_scope('infeasibility'):
-                sum_violation = tf.reduce_sum(self._a, axis=-1) - 1
-                capacity_violation = tf.maximum(0.0, self._a - self.ac_high)
-                requirement_violation = tf.maximum(0.0, self.ac_low - self._a)
-                self._infeasibility += tf.reduce_mean(
-                    tf.square(sum_violation), name='global_infeasibility')
-                self._infeasibility += tf.reduce_mean(
-                    capacity_violation, name='capacity_infeasibility')
-                self._infeasibility += tf.reduce_mean(
-                    requirement_violation, name='requirement_infeasibility')
+                sum_violation, min_violation, max_violation = tf_infeasibility(
+                    self._a, self.constraints, 'infeasibility_{0}'.format(self.constraints['name']))
+                self._infeasibility = tf.reduce_mean(
+                    sum_violation + min_violation + max_violation)
             if self.soft_constraints:
                 logger.log('Adding infeasibility penalty with lambda {0}'.format(
                     soft_constraints_lambda))
-                loss = -self._av_A + int(self.soft_constraints) * \
-                    soft_constraints_lambda * self._infeasibility
+                loss = -self._av_A + soft_constraints_lambda * self._infeasibility
             else:
                 loss = -self._av_A
             if a_l2_reg > 0:

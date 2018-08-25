@@ -233,3 +233,137 @@
 #             print('episode {0}:\t{1}'.format(self.episodes,R))
 #             if sum(self.rewards[-5:]) > (400*5):
 #                 break
+
+
+
+        # self.calculate_epsilons(self.ac_space.high)
+
+    def calculate_epsilons(self, constraints: np.ndarray, inputs_shape):
+        '''
+        for some epsilons vector,
+        our output z needs to be (exp + epsilons)/(sigma + sum(epsilons))
+        to satisfy the constraints, we get the following set of linear equations:
+        for all i:
+            (constraints[i] - 1) * epsilons[i] + constraints[i] * sum(epsilons[except i]) = 1 - constraints[i]
+        '''
+        if np.any(constraints < 0) or np.any(constraints > 1):
+            raise ValueError(
+                "constraints needs to be in range [0, 1]")
+        if np.sum(constraints) <= 1:
+            raise ValueError("sum of constraints need to be greater than 1")
+
+        dimensions = reduce(mul, inputs_shape, 1)
+        constraints = np.asarray(constraints)
+        constraints_flat = constraints.flatten()
+        # to solve the epsilons linear equation:
+        # coefficient matrix:
+        coeffs = np.array([[(constraints_flat[row] - 1 if col == row else constraints_flat[row])
+                            for col in range(dimensions)] for row in range(dimensions)])
+        constants = np.array([1 - constraints_flat[row]
+                              for row in range(dimensions)])
+        epsilons_flat = np.linalg.solve(coeffs, constants)
+        epsilons = np.reshape(epsilons_flat, inputs_shape)
+        logger.log("wrapper: episilons are {0}".format(
+            epsilons), level=logger.INFO)
+        return epsilons
+
+    def softmax_max(self, inputs: np.ndarray, max_constraints, epsilons=None):
+        """assumes that inputs lie between range 0 and 1"""
+        # y = inputs - tf.reduce_max(inputs, axis=1, keepdims=True)
+        # y = tf.minimum(inputs, 0)
+        # exp = tf.exp(y)
+        sigma = np.sum(inputs, axis=-1, keepdims=True)
+        if epsilons is None:
+            epsilons = self.calculate_epsilons(
+                max_constraints, inputs_shape=inputs.shape)
+        epsilons_sigma = np.sum(epsilons)
+        return (inputs + epsilons) / (sigma + epsilons_sigma)
+
+    def _nested_softmax(self, inputs, constrained_node, z_tree={}, z_node=None):
+        if constrained_node["equals"] is not None:
+            assert len(z_tree.keys(
+            )) == 0, "An equals_constraint was encountered at a non-root node! Node name: {0}".format(constrained_node["name"])
+            assert constrained_node["equals"] == constrained_node["min"] == constrained_node[
+                "max"], "At root node, min, max & equal constraints should be same"
+            # initialize z_tree:
+            z_tree["tensor"] = constrained_node["equals"]
+            z_tree["equals"] = constrained_node["equals"]
+            z_tree["min"] = constrained_node["min"]
+            z_tree["max"] = constrained_node["max"]
+            z_tree["name"] = constrained_node["name"]
+            z_tree["consumed_inputs"] = 0
+            z_node = z_tree
+
+        # base_case: if this the leaf node, return the tensor
+        if "children" not in constrained_node or len(constrained_node["children"]) == 0:
+            z_node["zone_id"] = constrained_node["zone_id"]
+            return [z_node]
+
+        '''
+        M = max_constraints of children\n
+        m = min_constraints of children\n
+        We will distribute min_constraints to the respective nodes first. \n
+        The remaining sum will be: \n
+            s = z_node["tensor"] - sum(m) \n
+        The maximum value of this sum can be:
+            S = z_node["max"] - sum(m) \n
+        Then we find vector u s.t. sum(u)=s. and u_i in (0, M_i-m_i) \n
+            u = s * max_constrained_softmax(inputs, (M-m)/S) \n
+        Then: \n
+            z_children_i = m_i + u_i \n
+        i.e. \n
+            z_children_i = m_i + s * max_constrained_softmax(inputs, (M - m)/S)_i \n
+
+        Please convince yourself that z_children_i will be in range (m_i, M_i) and sum(z_children) = z_node["tensor"]
+        '''
+
+        children = constrained_node["children"]
+        max_constraints = np.array([c["max"] for c in children])
+        min_constraints = np.array([c["min"] for c in children])
+        assert 0 <= np.sum(min_constraints) <= z_node["min"] <= z_node["max"] < np.sum(
+            max_constraints), "The constraints should satisfy 0 <= sum(children_min) <= parent_min <= parent_max < sum(children_max)"
+        assert np.all(0 <= min_constraints) and np.all(min_constraints < max_constraints) and np.all(
+            max_constraints <= 1), "The constraints should satisfy 0 <= min_constraint_i < max_constraint_i <= 1"
+
+        # # print(constrained_node['name'])
+        # if constrained_node['equals'] is not None:
+        #     # then this is root node. we need not compute epsilons dynamically
+        #     s = z_node["tensor"] - np.sum(min_constraints)
+        #     u_max_constraints = (max_constraints - min_constraints) / s
+        #     u_max_constraints = np.minimum(u_max_constraints, 1)
+        #     u = s * tf_softmax_with_max_constraints(inputs[:, z_tree["consumed_inputs"]:z_tree["consumed_inputs"] + len(
+        #         children)], u_max_constraints, scope="CSMM_on_children_of_{0}".format(z_node["name"]))
+        #     z_tree["consumed_inputs"] += len(children)
+        #     z_children_tensors = min_constraints + u
+        # else:
+        s = z_node["tensor"] - np.sum(min_constraints)
+        u_max_constraints = (max_constraints - min_constraints) / s
+        u_max_constraints = np.minimum(u_max_constraints, 1.0)
+        u = s * self.softmax_max(inputs[z_tree["consumed_inputs"]:z_tree["consumed_inputs"] + len(children)], u_max_constraints)
+        z_tree["consumed_inputs"] += len(children)
+        z_children_tensors = min_constraints + u
+
+        z_node["children"] = []
+        for i in range(len(children)):
+            child = {}
+            z_node["children"].append(child)
+            child["tensor"] = z_children_tensors[i:i + 1]
+            child["name"] = children[i]["name"]
+            child["min"] = children[i]["min"]
+            child["max"] = children[i]["max"]
+            child["equals"] = children[i]["equals"]
+
+        return_nodes = []
+        for z_node_child, constrained_node_child in zip(z_node["children"], constrained_node["children"]):
+            c_returned_nodes = self._nested_softmax(
+                inputs, constrained_node_child, z_tree=z_tree, z_node=z_node_child)
+            return_nodes.extend(c_returned_nodes)
+
+        return return_nodes
+
+    def nested_softmax(self, inputs, constraints, z_tree={}):
+        z_tree = {}
+        leaf_z_nodes = self._nested_softmax(inputs, constraints, z_tree=z_tree)
+        leaf_z_tensors = [leaf['tensor'] for leaf in sorted(
+            leaf_z_nodes, key=lambda leaf:leaf["zone_id"])]
+        return np.concatenate(leaf_z_tensors, axis=-1)

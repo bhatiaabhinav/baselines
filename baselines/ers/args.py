@@ -73,6 +73,7 @@ def parse():
     parser.add_argument('--l2_reg', type=float, default=1e-2)
     parser.add_argument('--a_l2_reg', type=float, default=0)
     parser.add_argument('--reward_scaling', type=float, default=1)
+    parser.add_argument('--is_mmdp', type=str2bool, default=False)
     parser.add_argument('--softmax_actor', type=str2bool, default=False)
     parser.add_argument('--soft_constraints', type=str2bool, default=False)
     parser.add_argument('--soft_constraints_lambda', type=float, default=10000)
