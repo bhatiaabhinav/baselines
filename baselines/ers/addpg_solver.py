@@ -225,7 +225,7 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
     if actor is None:
         sys_args_dict["ob_space"] = env.observation_space
         sys_args_dict["ac_space"] = env.action_space
-        sys_args_dict["constraints"] = env.metadata['constraints']
+        sys_args_dict["constraints"] = env.metadata.get('constraints', None)
         # sys_args_dict["log_transform_max_x"] = env.metadata.get(
         #     'max_alloc', None)
         # sys_args_dict["log_transform_t"] = env.metadata.get(
@@ -328,8 +328,13 @@ def ddpg(sys_args_dict, sess, env_id, wrappers, learning=False, actor=None, seed
 
     env.close()
     logger.log('Average reward per episode: {0}'.format(np.average(Rs)))
+    logger.log('Std reward per episode: {0}'.format(np.std(Rs)))
     logger.log('Exploitation average reward per episode: {0}'.format(
         np.average(exploit_Rs)))
+    logger.log('Exploitation std reward per episode: {0}'.format(
+        np.std(exploit_Rs)))
+    logger.log('Exploitation average blip reward per episode: {0}'.format(np.average(exploit_blip_Rs)))
+    logger.log('Exploitation std blip reward per episode: {0}'.format(np.std(exploit_blip_Rs)))
     return model
 
 

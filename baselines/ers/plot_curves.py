@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 import numpy as np
@@ -24,9 +25,11 @@ parser.add_argument(
     '--run_ids', help='run ids to plot. seperated by comma. Dont specify to plot all', default=None)
 parser.add_argument(
     '--metrics', help='seperated by comma', default='Reward')
+parser.add_argument('--scales', help='seperated by comma per metric. each scale of form y1:y2 or auto', default=None)
 parser.add_argument('--smoothing', type=int, default=250)
 parser.add_argument('--live', type=str2bool, default=False)
 parser.add_argument('--style', default='seaborn')
+parser.add_argument('--title', default=None)
 parser.add_argument('--update_interval', type=int, default=30)
 args = parser.parse_args()
 
@@ -50,7 +53,21 @@ color_map = {
     'uniform': 'silver',
     'no_repositioning': 'silver',
     'greedy': 'gray',
-    'vehicle_repositioning': 'gray'
+    'vehicle_repositioning': 'gray',
+    'rtrailer_cap5': 'gray'
+}
+
+line_style_map = {
+    'sddpg_rmsac_wolpert': '--',
+    'cddpg_rmsac_wolpert': '-',
+    'greedy': ':',
+    'vehicle_repositioning': ':',
+    'rtrailer_cap5': ':'
+}
+
+marker_map = {
+    # 'sddpg_rmsac_wolpert': 'o',
+    # 'cddpg_rmsac_wolpert': '+'
 }
 
 legend_sort_order = {
@@ -71,6 +88,7 @@ legend_sort_order = {
     'uniform': 0,
     'no_repositioning': 0,
     'greedy': 10,
+    'rtrailer_cap5': 15,
     'vehicle_repositioning': 10
 }
 
@@ -153,11 +171,13 @@ def read_all_data(dirs, metrics):
                         "baseline_data": baseline_data,
                     }
                 except Exception as e:
-                    print("Could not read baseline.json for {0}".format(dir_name))
+                    print(
+                        "Could not read baseline.json for {0}".format(dir_name))
                     print(type(e), e)
             elif os.path.exists(progress_fname):
                 try:
-                    plot_data, plot_episodes = load_progress(progress_fname, metrics)
+                    plot_data, plot_episodes = load_progress(
+                        progress_fname, metrics)
                     data[dir_name] = {
                         "dir_name": dir_name,
                         "plot_name": plot_name,
@@ -165,7 +185,8 @@ def read_all_data(dirs, metrics):
                     }
                     episodes = max(episodes, plot_episodes)
                 except Exception as e:
-                    print("Could not read progress.json for {0}".format(dir_name))
+                    print(
+                        "Could not read progress.json for {0}".format(dir_name))
                     print(type(e), e)
     return data, episodes
 
@@ -179,18 +200,23 @@ def get_x_y(dir_data, metric, episodes):
         x = np.array(dir_data['plot_data']['Episode'])
         y = np.array(dir_data['plot_data'][metric])
         y = moving_average(y, args.smoothing)
+    if len(x) > 1000:
+        # keep no more than 1000 points, so subsample:
+        k = int(len(x) / 1000)
+        x = x[::k].copy()
+        y = y[::k].copy()
     return x, y
 
 
-def plot_figure(data, metric, episodes):
+def plot_figure(data, metric, metric_label, scale, episodes):
     fig = plt.figure(num=metric)  # type: plt.Figure
     curves = []
     label_to_dir_name_map = {}
     for dir_name, dir_data in data.items():
         try:
             x, y = get_x_y(dir_data, metric, episodes)
-            curve, = plt.plot(
-                x, y, label=dir_data['plot_name'], color=color_map.get(dir_name))
+            curve, = plt.plot(x, y, label=dir_data['plot_name'], color=color_map.get(
+                dir_name), linestyle=line_style_map.get(dir_name, '-'), linewidth=2, marker=marker_map.get(dir_name))
             curves.append(curve)
             label_to_dir_name_map[dir_data['plot_name']] = dir_data['dir_name']
         except Exception as e:
@@ -198,11 +224,17 @@ def plot_figure(data, metric, episodes):
                 metric=metric, dir_name=dir_name))
             print(type(e), e)
     plt.xlabel('Episode no')
-    plt.ylabel(metric)
+    plt.ylabel(metric_label + ' (Smoothed)')
+    if scale == 'auto':
+        plt.gca().set_ylim(auto=True)
+    else:
+        plt.gca().set_ylim(scale)
+    plt.gca().tick_params(labelsize='large')
     handles, labels = plt.gca().get_legend_handles_labels()
-    labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: -legend_sort_order.get(label_to_dir_name_map[t[0]], 1000)))
+    labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: -
+                                  legend_sort_order.get(label_to_dir_name_map[t[0]], 1000)))
     plt.legend(handles, labels)
-    plt.title('Average {0} Per episode'.format(metric))
+    plt.title(args.title)
     if args.live:
         fig.canvas.mpl_connect('axes_enter_event', enter_figure)
         fig.canvas.mpl_connect('axes_leave_event', leave_figure)
@@ -232,7 +264,7 @@ def save_figure(fig, name):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     save_path = os.path.join(save_dir, "{0}.png".format(name))
-    fig.savefig(save_path)
+    fig.savefig(save_path, dpi=192)
 
 
 if args.run_ids is None:
@@ -240,20 +272,61 @@ if args.run_ids is None:
 else:
     dirs = args.run_ids.split(',')
 
+if args.title is None:
+    args.title = args.env
+
 metrics = args.metrics.split(',')
 metrics = [m.strip('\"') for m in metrics]
+metric_labels = []
+metric_ids = []
+for m in metrics:
+    m_label = m
+    m_id = m
+    if ':' in m:
+        m_label = m.split(':')[0]
+        m_id = m.split(':')[1]
+    metric_labels.append(m_label)
+    metric_ids.append(m_id)
+metrics = metric_ids
+
+if args.scales is None:
+    scales = ['auto' for m in metrics]
+else:
+    scales_strings = args.scales.split(',')
+    scales = []
+    assert len(scales_strings) == len(metrics), "Please specify one scale for each metric"
+    try:
+        for scales_string in scales_strings:
+            if scales_string == 'auto':
+                scales.append(scales_string)
+            else:
+                bounds = scales_string.split(':')
+                y1 = float(bounds[0])
+                y2 = float(bounds[1])
+                scales.append([y1, y2])
+    except Exception as e:
+        print("Could not parse scales")
+        print(type(e), e)
 
 data, episodes = read_all_data(dirs, ["Episode"] + metrics)
 last_update_at = time.time()
 plt.style.use(args.style)
+
+mpl.rcParams['font.size'] = 14
+mpl.rcParams['axes.titlesize'] = 'x-large'
+mpl.rcParams['axes.labelsize'] = 'x-large'
+mpl.rcParams['xtick.labelsize'] = 'large'
+mpl.rcParams['ytick.labelsize'] = 'large'
+mpl.rcParams['legend.fontsize'] = 'x-large'
+mpl.rcParams['figure.titlesize'] = 'x-large'
 
 if args.live:
     plt.ion()
 
 figs = []
 curve_sets = []
-for metric in metrics:
-    fig, curves = plot_figure(data, metric, episodes)
+for metric, metric_label, scale in zip(metrics, metric_labels, scales):
+    fig, curves = plot_figure(data, metric, metric_label, scale, episodes)
     figs.append(fig)
     curve_sets.append(curves)
     save_figure(fig, metric)

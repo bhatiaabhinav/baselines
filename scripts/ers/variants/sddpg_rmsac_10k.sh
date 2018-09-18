@@ -6,7 +6,7 @@ $GYM_PYTHON -m baselines.ers.addpg_solver \
 	--nstack=3 \
 	--nn_size="[128,96]" \
 	--soft_constraints=True \
-	--soft_constraints_lambda=10000 \
+	--soft_constraints_lambda=1000 \
 	--softmax_actor=False \
 	--wolpertinger_critic_train=False \
 	--log_norm_obs_alloc=False \

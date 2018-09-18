@@ -317,16 +317,17 @@ class DDPG_Model_Main(DDPG_Model_Base):
             # for training actions: maximize Advantage i.e. A
             self._a_vars = self._get_tf_trainable_variables('actor')
             self._av_A = tf.reduce_mean(self._A)
-            self._infeasibility = 0
-            with tf.name_scope('infeasibility'):
-                sum_violation, min_violation, max_violation = tf_infeasibility(
-                    self._a, self.constraints, 'infeasibility_{0}'.format(self.constraints['name']))
-                self._infeasibility = tf.reduce_mean(
-                    sum_violation + min_violation + max_violation)
-            if self.soft_constraints:
-                logger.log('Adding infeasibility penalty with lambda {0}'.format(
-                    soft_constraints_lambda))
-                loss = -self._av_A + soft_constraints_lambda * self._infeasibility
+            self._infeasibility = tf.constant(0.0)
+            if self.constraints is not None:
+                with tf.name_scope('infeasibility'):
+                    sum_violation, min_violation, max_violation = tf_infeasibility(
+                        self._a, self.constraints, 'infeasibility_{0}'.format(self.constraints['name']))
+                    self._infeasibility = tf.reduce_mean(
+                        sum_violation + min_violation + max_violation)
+                if self.soft_constraints:
+                    logger.log('Adding infeasibility penalty with lambda {0}'.format(
+                        soft_constraints_lambda))
+                    loss = -self._av_A + soft_constraints_lambda * self._infeasibility
             else:
                 loss = -self._av_A
             if a_l2_reg > 0:
