@@ -1,7 +1,7 @@
 import numpy as np
 import pygame
 import sobol_seq
-
+import sys
 
 def new_random_point(random: np.random.RandomState):
     x = random.rand()
@@ -35,7 +35,11 @@ def main():
     seed = 0
     sobol_seed = seed
     random = np.random.RandomState(seed)
-    mode = 'random'
+    if len(sys.argv) > 1 and sys.argv[1] in ['random', 'sobol', 'golden']:
+        mode = sys.argv[1]
+    else:
+        print('No or unrecognirzed arguments were given. Falling back to random mode')
+        mode = 'random'
     if mode == 'sobol':
         x, y, sobol_seed = new_sobol_random_point(sobol_seed)
     else:
